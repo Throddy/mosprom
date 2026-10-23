@@ -16,6 +16,7 @@ def create_detector(backend: str | None = None) -> Detector:
         from ml.backends.onnx_rt import OnnxDetector
         return OnnxDetector(models_cfg, ROOT)
     if backend == "linq":
-        from ml.backends.linq import LinqDetector
-        return LinqDetector(models_cfg, ROOT)
+        # Расчёт на TPU идёт через ml.relay на сервере Jupyter: notebooks/relay.md.
+        from ml.backends.linq_relay import LinqRelayDetector
+        return LinqRelayDetector()
     raise ValueError(f"неизвестный бэкенд детектора: {backend}")
