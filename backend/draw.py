@@ -2,7 +2,7 @@
 import cv2
 import numpy as np
 
-from core.schemas import Detection, Zone
+from core.schemas import Detection, Track, Zone
 
 RED = (0, 0, 255)
 GREEN = (0, 255, 0)
@@ -18,7 +18,8 @@ SKELETON = [
 ]
 
 
-def draw(frame: np.ndarray, detections: list[Detection], zones: list[Zone], info: str) -> np.ndarray:
+def draw(frame: np.ndarray, detections: list[Detection], zones: list[Zone], info: str,
+         tracks: list[Track] | None = None) -> np.ndarray:
     img = frame.copy()
     h, w = img.shape[:2]
     for zone in zones:
@@ -33,6 +34,12 @@ def draw(frame: np.ndarray, detections: list[Detection], zones: list[Zone], info
         elif det.cls in VEHICLES:
             cv2.rectangle(img, (x1, y1), (x2, y2), ORANGE, 2)
             cv2.putText(img, det.cls, (x1, max(y1 - 6, 14)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, ORANGE, 2)
+    for track in tracks or []:
+        x1, y1, x2, y2 = (int(v) for v in track.bbox)
+        color = RED if track.active else WHITE
+        if track.active:
+            cv2.rectangle(img, (x1, y1), (x2, y2), RED, 3)
+        cv2.putText(img, f"id {track.track_id}", (x1, min(y2 + 20, h - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     cv2.putText(img, info, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, WHITE, 2)
     return img
 

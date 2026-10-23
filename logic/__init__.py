@@ -1,20 +1,7 @@
-from core.schemas import CameraConfig, Detection, Event, Track
+from logic.engine import Engine, Result
+from logic.rules import RULES, describe, register
 
+# Имя из комментария в core/schemas.py
+rule_specs = describe
 
-class Engine:
-    def __init__(self, cameras: list[CameraConfig]) -> None:
-        raise NotImplementedError("BE-4")
-
-    def process(self, camera_id: str, ts: float, frame_size: tuple[int, int],
-                detections: list[Detection]) -> list[Event]:
-        raise NotImplementedError("BE-4")
-
-    def update_camera(self, camera: CameraConfig) -> None:
-        raise NotImplementedError("BE-4")
-
-    def tracks(self, camera_id: str) -> list[Track]:
-        raise NotImplementedError("BE-4")
-
-
-def rule_specs() -> list[dict]:
-    raise NotImplementedError("BE-4")
+__all__ = ["Engine", "Result", "RULES", "describe", "register", "rule_specs"]

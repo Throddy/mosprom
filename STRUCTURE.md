@@ -79,4 +79,5 @@ data/videos/
 *.tpu
 *.pt2
 *.ovpn
+*.npy
 ```

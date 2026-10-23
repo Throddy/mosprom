@@ -6,6 +6,7 @@ from collections import deque
 
 from backend.sources import FrameSource, RtspSource, open_source
 from core.schemas import CameraConfig
+from logic import Engine, Result
 
 log = logging.getLogger(__name__)
 
@@ -22,7 +23,9 @@ class _Camera:
         self.online = False
         self.frame = None
         self.detections = []
+        self.tracks = []
         self.ts = None
+        self.engine = Engine(cfg)
         self.processed = deque()  # время обработки кадров за последние FPS_WINDOW с
         self.latencies = deque(maxlen=LATENCY_WINDOW)
         self.reopen = threading.Event()
@@ -110,11 +113,18 @@ class Pipeline:
                 log.exception("ошибка детектора")
                 self.stopped.wait(1.0)
                 continue
-            done = time.time()
             for (cam, ts, frame), detections in zip(batch, results):
+                h, w = frame.shape[:2]
+                try:
+                    result = cam.engine.process(ts, w, h, detections)
+                except Exception:
+                    log.exception("камера %s: ошибка движка правил", cam.cfg.id)
+                    result = Result()
+                done = time.time()
                 with cam.lock:
                     cam.frame = frame
                     cam.detections = detections
+                    cam.tracks = result.tracks
                     cam.ts = ts
                     cam.processed.append(done)
                     while cam.processed and cam.processed[0] < done - FPS_WINDOW:
@@ -122,7 +132,7 @@ class Pipeline:
                     cam.latencies.append((done - ts) * 1000.0)
                 if self.on_result is not None:
                     try:
-                        self.on_result(cam.cfg.id, ts, frame, detections)
+                        self.on_result(cam.cfg.id, ts, frame, result)
                     except Exception:
                         log.exception("камера %s: ошибка on_result", cam.cfg.id)
 
@@ -138,6 +148,7 @@ class Pipeline:
                 "latency_ms": latency,
                 "frame": cam.frame,
                 "detections": cam.detections,
+                "tracks": cam.tracks,
                 "ts": cam.ts,
             }
 
@@ -151,6 +162,7 @@ class Pipeline:
             return
         old = cam.cfg
         cam.cfg = cfg
+        cam.engine.update_config(cfg)
         if old.source != cfg.source or old.fps != cfg.fps:
             cam.reopen.set()
             cam.interrupt()
