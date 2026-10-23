@@ -1,2 +1,6 @@
 numpy
 pyyaml
+fastapi
+uvicorn[standard]
+opencv-python
+httpx
