@@ -4,8 +4,8 @@
 
 ```
 .
-├── README.md                Максим    запуск, архитектура, ссылки на README зон
-├── CONTRACT.md              все       зоны и интерфейсы, правка по разделу 8
+├── README.md                Никитос   описание, запуск, архитектура, ссылки
+├── CONTRACT.md              все       зоны и интерфейсы, правка по разделу 9
 ├── PLAN.md                  все       задачи, каждый правит свой раздел
 ├── STRUCTURE.md             Максим    этот файл
 ├── GIT.md                   Максим    порядок работы с git
@@ -16,7 +16,7 @@
 ├── core/                    Максим    общие типы, код из раздела 3 контракта
 │   ├── __init__.py
 │   ├── schemas.py
-│   └── config.py            load_cameras(), save_cameras()
+│   └── config.py
 │
 ├── configs/
 │   ├── cameras.yaml         Максим    камеры, зоны, правила
@@ -28,16 +28,19 @@
 │   ├── README.md            модели, веса, путь до TPU, замеры
 │   └── weights/             в git не попадает
 │
-├── logic/                   Никитос
-│   ├── __init__.py          Engine, rule_specs()
-│   ├── requirements.txt
-│   └── README.md            правила, параметры, добавление нового правила
+├── logic/                   Максим    трекинг и движок правил
+│   ├── __init__.py
+│   └── rules/               одно правило = один модуль
 │
 ├── backend/                 Максим
-│   ├── requirements.txt
-│   └── media/               снимки и клипы событий, в git не попадает
+│   ├── __main__.py          python -m backend
+│   ├── requirements.txt     зависимости core/, logic/, backend/, scripts/
+│   ├── README.md            запуск, API, правила, добавление правила
+│   └── media/               снимки событий, в git не попадает
 │
-├── frontend/                Максим
+├── frontend/                Никитос
+│   ├── package.json
+│   └── dist/                сборка, в git не попадает
 │
 ├── scripts/                 Максим
 │   ├── run_offline.py
@@ -47,9 +50,9 @@
 │
 ├── data/
 │   ├── demo.mp4             Максим    10 с, до 10 МБ, для smoke.py
-│   ├── videos/              все       в git не попадает, хранится в общей папке
+│   ├── videos/              Никитос   в git не попадает, хранится в общей папке
 │   └── test_set/
-│       └── labels.csv       Аня
+│       └── labels.csv       Никитос   разметка тестовых видео
 │
 ├── reports/                 Аня
 │   ├── benchmarks.json
@@ -63,8 +66,11 @@
 
 ```
 .env
+.venv/
 __pycache__/
 .ipynb_checkpoints/
+node_modules/
+frontend/dist/
 ml/weights/
 backend/media/
 data/videos/

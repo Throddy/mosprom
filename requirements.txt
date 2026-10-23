@@ -1,3 +1,2 @@
 -r backend/requirements.txt
 -r ml/requirements.txt
--r logic/requirements.txt
