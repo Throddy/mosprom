@@ -87,9 +87,9 @@ def gray_frame() -> np.ndarray:
     return np.full((FRAME_H, FRAME_W, 3), 128, np.uint8)
 
 
-def save_snapshot(event: Event, camera_name: str, media_dir: Path) -> Path:
+def save_snapshot(event: Event, media_dir: Path) -> Path:
     img = gray_frame()
-    cv2.putText(img, f"{camera_name} {event.type}", (40, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
+    cv2.putText(img, f"{event.camera_id} {event.type}", (40, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
     x1, y1, x2, y2 = (int(v) for v in event.bbox)
     cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
     path = media_dir / event.camera_id / f"{event.id}.jpg"

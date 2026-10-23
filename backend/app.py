@@ -16,8 +16,11 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from backend.fixtures import CAMERAS, RULES, gray_frame, make_event, save_snapshot, seed_events
+from backend.cameras import load_cameras
+from backend.draw import draw
+from backend.fixtures import RULES, gray_frame, make_event, save_snapshot, seed_events
 from backend.hub import Hub, Store, to_json
+from backend.pipeline import Pipeline
 from core.schemas import SEVERITIES, CameraConfig, RuleConfig, Zone
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -85,13 +88,16 @@ def encode_jpeg(img: np.ndarray) -> bytes:
 
 
 def create_app() -> FastAPI:
-    store = Store(CAMERAS, seed_events())
+    store = Store(load_cameras(), seed_events())
     hub = Hub()
     interval = float(os.environ.get("FIXTURE_WS_INTERVAL", "10"))
+    use_pipeline = os.environ.get("PIPELINE", "1") == "1"
+    detector_backend = os.environ.get("DETECTOR_BACKEND") or "onnx"
+    state = {"detector": None, "pipeline": None}
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
     def add_event(event):
-        save_snapshot(event, store.cameras[event.camera_id].name, MEDIA_DIR)
+        save_snapshot(event, MEDIA_DIR)
         store.add_event(event)
 
     async def fixture_loop():
@@ -104,10 +110,17 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         for event in store.events.values():
-            save_snapshot(event, store.cameras[event.camera_id].name, MEDIA_DIR)
+            save_snapshot(event, MEDIA_DIR)
+        if use_pipeline:
+            from ml import create_detector
+            state["detector"] = create_detector()
+            state["pipeline"] = Pipeline(list(store.cameras.values()), state["detector"])
+            state["pipeline"].start()
         task = asyncio.create_task(fixture_loop())
         yield
         task.cancel()
+        if state["pipeline"] is not None:
+            state["pipeline"].stop()
 
     app = FastAPI(lifespan=lifespan)
     app.state.store = store
@@ -135,6 +148,14 @@ def create_app() -> FastAPI:
 
     @app.get("/api/status")
     def status():
+        pipeline = state["pipeline"]
+        if pipeline is not None:
+            cams = []
+            for c in store.cameras.values():
+                snap = pipeline.snapshot(c.id)
+                cams.append({"id": c.id, "online": snap["online"], "fps": round(snap["fps"], 1),
+                             "latency_ms": round(snap["latency_ms"], 1)})
+            return {"detector": state["detector"].name, "backend": detector_backend, "cameras": cams}
         return {
             "detector": "fixtures",
             "backend": "fixtures",
@@ -152,16 +173,43 @@ def create_app() -> FastAPI:
             raise HTTPException(400, "id in path and body differ")
         get_camera(camera_id)
         store.cameras[camera_id] = body.to_config()
+        if state["pipeline"] is not None:
+            state["pipeline"].update_camera(store.cameras[camera_id])
         return to_json(store.cameras[camera_id])
 
     @app.get("/api/cameras/{camera_id}/frame")
     def frame(camera_id: str):
         camera = get_camera(camera_id)
+        pipeline = state["pipeline"]
+        if pipeline is not None:
+            img = pipeline.snapshot(camera_id)["frame"]
+            if img is None:
+                raise HTTPException(503, "кадра ещё нет")
+            return Response(encode_jpeg(img), media_type="image/jpeg")
         return Response(encode_jpeg(camera_frame(camera)), media_type="image/jpeg")
+
+    async def pipeline_frames(pipeline: Pipeline, camera_id: str):
+        last_ts = None
+        while True:
+            camera = store.cameras.get(camera_id)
+            if camera is None:
+                return
+            snap = pipeline.snapshot(camera_id)
+            if snap["frame"] is not None and snap["ts"] != last_ts:
+                last_ts = snap["ts"]
+                info = f"{camera_id} fps {snap['fps']:.1f} lat {snap['latency_ms']:.0f} ms"
+                jpeg = encode_jpeg(draw(snap["frame"], snap["detections"], camera.zones, info))
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                await asyncio.sleep(1.0 / camera.fps if camera.fps > 0 else 0.1)
+            else:
+                await asyncio.sleep(0.02)
 
     @app.get("/api/cameras/{camera_id}/stream")
     async def stream(camera_id: str):
         get_camera(camera_id)
+        if state["pipeline"] is not None:
+            return StreamingResponse(pipeline_frames(state["pipeline"], camera_id),
+                                     media_type="multipart/x-mixed-replace; boundary=frame")
 
         async def frames():
             while True:
