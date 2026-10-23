@@ -16,24 +16,28 @@
 
 ## Команды
 
-Контейнер (из корня репозитория). `<scratch>` — папка с колёсами зависимостей и скриптом `compile_tpu.py`:
+Контейнер (из корня репозитория):
 
 ```bash
 docker run -d --name linq-sdk --platform linux/amd64 \
-  -v "$PWD":/repo -v "$HOME/linq":/linq -v <scratch>:/scratch \
-  -w /repo python:3.12-slim sleep infinity
+  -v "$PWD":/repo -v "$HOME/linq":/linq -w /repo python:3.12-slim sleep infinity
 ```
 
-Установка SDK. Список колёс Linux получен на Mac командой ниже, колёса скачаны заранее в `<scratch>/sdk/wheelhouse`, потому что через VPN скорость одного соединения около 50 КБ/с. `torch` и `torchvision` берутся в CPU-сборке.
+Установка SDK. Колёса Linux (89 файлов, 960 МБ) лежат в `~/linq/wheels`: через VPN скорость одного соединения около 50 КБ/с, поэтому они скачаны заранее. `torch` и `torchvision` взяты в CPU-сборке, пакетов `nvidia-*` нет. Список колёс получен на Mac командой:
 
 ```bash
 .venv/bin/python -m pip install --dry-run --ignore-installed --report report.json --target _unused \
   --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --platform linux_x86_64 \
   --python-version 3.12 --implementation cp --abi cp312 --only-binary=:all: \
   --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt  # пути к колёсам packets/ абсолютные
-docker exec -w /linq/tpu_framework/packets linq-sdk \
-  pip install --no-index --find-links /scratch/sdk/wheelhouse -r requirements.txt
 ```
+
+```bash
+docker exec -w /linq/tpu_framework/packets linq-sdk \
+  pip install --no-index --find-links /linq/wheels -r requirements.txt
+```
+
+Скрипты компиляции и проверки квантования лежат в `~/linq/tools/` (`compile_tpu.py`, `check_quant.py`, `check_cut.py`), в контейнере это `/linq/tools/`.
 
 Калибровочные данные: 250 кадров, 25 из `data/videos/ext/forklift/forklift_01.mp4` и 225 из `data/videos/ext/urfall/`, тензоры через `ml.prepost.preprocess`:
 
@@ -44,7 +48,7 @@ docker exec -w /linq/tpu_framework/packets linq-sdk \
 Компиляция головы графа (используемый вариант):
 
 ```bash
-docker exec -w /tmp linq-sdk python /scratch/compile_tpu.py \
+docker exec -w /tmp linq-sdk python /linq/tools/compile_tpu.py \
   --onnx /repo/ml/weights/yolov8n-pose.onnx --calib /repo/data/videos/calib \
   --work-dir /repo/ml/weights/linq/yolov8n-pose-cut --program-dir /repo/ml/weights --preset o1 \
   --cut /model.22/dfl/conv/Conv_output_0,/model.22/Sigmoid_output_0,/model.22/Sigmoid_1_output_0,/model.22/Mul_4_output_0
@@ -178,5 +182,16 @@ if __name__ == "__main__":
 
 ## Загрузка и проверка на TPU
 
-- Загрузка выполняется через интерфейс Jupyter: файл `ml/weights/yolov8n-pose_head_b1_o1_h1m.tpu` загрузить в рабочую папку и выполнить `! cp yolov8n-pose_head_b1_o1_h1m.tpu /auto/cache/<LOGIN>/`.
-- Проверка `notebooks/linq_check.py --program yolov8n-pose_head_b1_o1_h1m.tpu --input data/videos/calib/0050.npy --input-name images`: не выполнена. Программа не загружена, в `.env` нет `LINQ_AMQP_*`, пакета `tpu_pycloud_format` нет вне Jupyter. Ожидаемые выходы — четыре тензора из таблицы «Результат».
+- Загрузка выполнена через интерфейс Jupyter: файл `ml/weights/yolov8n-pose_head_b1_o1_h1m.tpu` загружен в рабочую папку и скопирован командой `! cp yolov8n-pose_head_b1_o1_h1m.tpu /auto/cache/<LOGIN>/`.
+- Проверка с Mac: `set -a; source .env; set +a; .venv/bin/python notebooks/linq_check.py --program yolov8n-pose_head_b1_o1_h1m.tpu --input data/videos/calib/0050.npy --input-name images`:
+
+```
+выход /model.22/Sigmoid_output_0: форма (1, 1, 8400)
+выход /model.22/Mul_4_output_0: форма (1, 17, 2, 8400)
+выход /model.22/Sigmoid_1_output_0: форма (1, 17, 1, 8400)
+выход /model.22/dfl/conv/Conv_output_0: форма (1, 1, 4, 8400)
+время запроса: 3820 мс
+```
+
+- Выходы TPU (float32), пропущенные через `yolov8n-pose_tail.onnx`, против исходного ONNX на кадрах `0000`, `0050`, `0100`, `0150`, `0225`: IoU бокса с максимальной уверенностью 0.95–0.99, средняя ошибка бокса 0.8–2.2 px, координат точек 0.7–2.0 px, уверенности точек 0.004–0.012. Значения совпадают с torch-графом SDK из таблицы выше.
+- Время одного запроса с Mac через VPN: 3.2–4.1 с. Вход float32 `(1, 3, 640, 640)` занимает 4.9 МБ. Для resnet50 со входом 0.6 МБ запрос занимает 0.7–1.2 с (`notebooks/linq.md`, «Проверка»).
