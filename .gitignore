@@ -1,0 +1,8 @@
+.env
+__pycache__/
+.ipynb_checkpoints/
+ml/weights/
+backend/media/
+data/videos/
+*.pt
+*.onnx

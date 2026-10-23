@@ -1,0 +1,15 @@
+cameras:
+  - id: cam1
+    name: Склад, ряд 3
+    source: data/videos/warehouse.mp4
+    fps: 10
+    zones:
+      - id: forklift_lane
+        name: Проезд погрузчика
+        polygon: [[0.10, 0.40], [0.55, 0.40], [0.55, 0.95], [0.10, 0.95]]
+    rules:
+      - type: danger_zone
+        zone: forklift_lane
+        schedule: ["07:55", "12:00"]
+        params: {min_duration: 1.0}
+      - type: fall
