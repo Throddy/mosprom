@@ -13,6 +13,7 @@
 | `ИНСТР` | `~/linq/LinQ/Инструкция_удаленному_сервису_инференса_сетей_LinQ_TPU.pdf`, с. 1 |
 | `ПРОЦ` | `~/linq/LinQ/Процедура_подготовки_и_инференса_сетей_на_LinQ_TPU.pdf`, с. 1 |
 | `VPN` | `~/linq/LinQ/Настройка OpenVPN Ubuntu v2.pdf`, с. 2 |
+| `PKG` | `~/linq/pkgs/tpu_pycloud_format/` (`headers.py`, `_io.py`) и `~/linq/pkgs/tpu_pycloud_format-0.0.1.dist-info/METADATA`, копия пакета из окружения Jupyter |
 
 ## Среда SDK
 
@@ -75,7 +76,8 @@
 - Ответ: `channel.consume(<очередь>, auto_ack=True, inactivity_timeout=1.0)`, проверка `MESSAGE_ID_ATTR_NAME`, затем `data, metadata, worker = deserialize(body)`. `data` — словарь `{имя выхода: np.ndarray}`. `worker` содержит `worker_pid`, `status_code`, `error_message`. Пустой `data` означает ошибку воркера. `NB`, ячейка [4].
 - Формат тензоров: вход и выход в пользовательском формате float32, например вход `(1, 3, 224, 224)` и выход `(1, 1000)` для resnet50. Упаковку выполняет сервис (`raw=False`). `NB`, ячейка [1].
 - Режим: асинхронный. Запрос публикуется в очередь, ответ приходит в очередь клиента, тайм-аут ожидания в примере 60 с. `NB`, ячейки [1], [3], [4].
-- Пакет `tpu_pycloud_format`: в `~/linq` его нет, он установлен в окружении Jupyter. Источник пакета: неизвестно.
+- Пакет `tpu_pycloud_format` 0.0.1 установлен в окружении Jupyter, копия лежит в `~/linq/pkgs`. Зависимости: `protobuf>=4.21`, `numpy>=1.24.3,<2`. В `.venv` подключается файлом `linq_pkgs.pth` в `site-packages` со строкой `<путь к ~/linq/pkgs>`. `PKG`, `METADATA`.
+- Значения заголовков: `TARGET_URI_ATTR_NAME = "uri"`, `RESPONSE_ROUTING_KEYS_ATTR_NAME = "response_routing_keys"`, `MESSAGE_ID_ATTR_NAME = "tpu_pycloud_message_id"`. Тело — protobuf `Task` с тензорами `dtype`, `shape`, `byte_data`. `PKG`, `headers.py`, `_io.py`.
 - Локальный API `pytpu` работает только на машине с устройством `/dev/tpu*`: `tpu.Device.list_devices()`, `Device.open()`, `device.load(<программа>)`, `program.inference()`, `inference.run({<вход>: <тензор>})`. Установка через `Installation_Guide.pdf`, которого в материалах нет. `API`; `FW`, гл. 7, с. 37–38.
 
 ## Переменные окружения
@@ -84,15 +86,16 @@
 |---|---|---|
 | `LINQ_LOGIN` | логин Jupyter, задаёт папку программ `/auto/cache/<LINQ_LOGIN>` | да |
 | `LINQ_PASSWORD` | пароль Jupyter, вызовом API не используется | да |
-| `LINQ_AMQP_HOST` | адрес брокера RabbitMQ | нет |
-| `LINQ_AMQP_PORT` | порт брокера RabbitMQ | нет |
-| `LINQ_AMQP_USER` | логин брокера RabbitMQ | нет |
-| `LINQ_AMQP_PASSWORD` | пароль брокера RabbitMQ | нет |
+| `LINQ_AMQP_HOST` | адрес брокера RabbitMQ | да |
+| `LINQ_AMQP_PORT` | порт брокера RabbitMQ | да |
+| `LINQ_AMQP_USER` | логин брокера RabbitMQ | да |
+| `LINQ_AMQP_PASSWORD` | пароль брокера RabbitMQ | да |
 
 ## Проверка
 
 - resnet50 в Jupyter (запуск Ани): работает, класс 257, ответ 0.67 с, `status_code=0`.
 - `curl -sS -m 10 -o /dev/null -w "%{http_code}\n" http://hackathon.lin-q.ru/` при включённом VPN: `302`.
 - TCP-подключение к `10.0.114.30:5672` с Mac при включённом VPN с раздельным туннелем: порт открыт.
-- В `.venv` установлены пакеты, которые импортирует пример: `pika 1.4.4`, `pillow 12.3.0`, `numpy 2.2.6`. `pytpu` и `tpu_pycloud_format` вне сервера недоступны.
-- `notebooks/linq_check.py` не выполнил вызов: в `.env` нет `LINQ_AMQP_HOST`, `LINQ_AMQP_PORT`, `LINQ_AMQP_USER`, `LINQ_AMQP_PASSWORD`, запуск завершается на импорте `tpu_pycloud_format`.
+- В `.venv` установлены пакеты, которые импортирует пример: `pika 1.4.4`, `pillow 12.3.0`, `numpy 1.26.4`, `protobuf 7.36.2`, `tpu_pycloud_format 0.0.1` через `linq_pkgs.pth`. `pytpu` вне сервера недоступен.
+- `set -a; source .env; set +a; .venv/bin/python notebooks/linq_check.py` с Mac: `выход 495: форма (1, 1000)`, `время запроса: 952 мс`.
+- Три повторных запроса той же программы: класс 257 во всех, время 1204, 717 и 781 мс. Каждый запрос открывает новое подключение к брокеру.
