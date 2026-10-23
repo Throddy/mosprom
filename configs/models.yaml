@@ -1,2 +1,3 @@
-# Владелец: Аня. Заполняется в задаче ML-1.
-models: []
+models:
+  pose: {weights: ml/weights/yolov8n-pose.onnx, imgsz: 640, conf: 0.4}
+  det: {weights: ml/weights/yolov8n.onnx, imgsz: 640, conf: 0.4, classes: [car, truck, bus]}
