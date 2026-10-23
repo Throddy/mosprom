@@ -76,4 +76,7 @@ backend/media/
 data/videos/
 *.pt
 *.onnx
+*.tpu
+*.pt2
+*.ovpn
 ```
