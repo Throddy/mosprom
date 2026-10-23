@@ -1,6 +1,7 @@
 """API бэкенда по CONTRACT.md, раздел 6. До BE-6 работает на тестовых данных."""
 import asyncio
 import json
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -22,6 +23,9 @@ from backend.fixtures import RULES, gray_frame, make_event, save_snapshot, seed_
 from backend.hub import Hub, Store, to_json
 from backend.pipeline import Pipeline
 from core.schemas import SEVERITIES, CameraConfig, RuleConfig, Zone
+from logic import describe
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 MEDIA_DIR = ROOT / "backend" / "media"
@@ -107,6 +111,15 @@ def create_app() -> FastAPI:
             add_event(event)
             await hub.broadcast("event_new", store.event_view(event))
 
+    def on_result(camera_id, ts, frame, result):
+        # До BE-6 события движка только пишутся в лог, в Store и WebSocket идут тестовые.
+        for e in result.new_events:
+            log.info("event new: camera %s type %s track %s ts_confirm %.2f", camera_id, e.type, e.track_id,
+                     e.ts_confirm)
+        for e in result.closed_events:
+            log.info("event closed: camera %s type %s track %s ts_end %.2f", camera_id, e.type, e.track_id,
+                     e.ts_end)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         for event in store.events.values():
@@ -114,7 +127,7 @@ def create_app() -> FastAPI:
         if use_pipeline:
             from ml import create_detector
             state["detector"] = create_detector()
-            state["pipeline"] = Pipeline(list(store.cameras.values()), state["detector"])
+            state["pipeline"] = Pipeline(list(store.cameras.values()), state["detector"], on_result)
             state["pipeline"].start()
         task = asyncio.create_task(fixture_loop())
         yield
@@ -198,7 +211,7 @@ def create_app() -> FastAPI:
             if snap["frame"] is not None and snap["ts"] != last_ts:
                 last_ts = snap["ts"]
                 info = f"{camera_id} fps {snap['fps']:.1f} lat {snap['latency_ms']:.0f} ms"
-                jpeg = encode_jpeg(draw(snap["frame"], snap["detections"], camera.zones, info))
+                jpeg = encode_jpeg(draw(snap["frame"], snap["detections"], camera.zones, info, snap["tracks"]))
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
                 await asyncio.sleep(1.0 / camera.fps if camera.fps > 0 else 0.1)
             else:
@@ -224,7 +237,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/rules")
     def rules():
-        return RULES
+        return describe() or RULES
 
     @app.get("/api/events")
     def events(
