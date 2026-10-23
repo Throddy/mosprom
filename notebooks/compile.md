@@ -37,7 +37,7 @@ docker exec -w /linq/tpu_framework/packets linq-sdk \
   pip install --no-index --find-links /linq/wheels -r requirements.txt
 ```
 
-Скрипты компиляции и проверки квантования лежат в `~/linq/tools/` (`compile_tpu.py`, `check_quant.py`, `check_cut.py`), в контейнере это `/linq/tools/`.
+Скрипты компиляции и проверки квантования лежат в `~/linq/tools/` (`compile_tpu.py`, `check_quant.py`, `check_cut.py`, `check_cut_det.py`), в контейнере это `/linq/tools/`.
 
 Калибровочные данные: 250 кадров, 25 из `data/videos/ext/forklift/forklift_01.mp4` и 225 из `data/videos/ext/urfall/`, тензоры через `ml.prepost.preprocess`:
 
@@ -45,14 +45,21 @@ docker exec -w /linq/tpu_framework/packets linq-sdk \
 .venv/bin/python notebooks/make_calib.py --src data/videos/ext --out data/videos/calib --tensors
 ```
 
-Компиляция головы графа (используемый вариант):
+Компиляция головы графа (используемый вариант) для `yolov8n-pose` и `yolov8n`:
 
 ```bash
 docker exec -w /tmp linq-sdk python /linq/tools/compile_tpu.py \
   --onnx /repo/ml/weights/yolov8n-pose.onnx --calib /repo/data/videos/calib \
   --work-dir /repo/ml/weights/linq/yolov8n-pose-cut --program-dir /repo/ml/weights --preset o1 \
   --cut /model.22/dfl/conv/Conv_output_0,/model.22/Sigmoid_output_0,/model.22/Sigmoid_1_output_0,/model.22/Mul_4_output_0
+docker exec -w /tmp linq-sdk python /linq/tools/compile_tpu.py \
+  --onnx /repo/ml/weights/yolov8n.onnx --calib /repo/data/videos/calib \
+  --work-dir /repo/ml/weights/linq/yolov8n-cut --program-dir /repo/ml/weights --preset o1 \
+  --cut /model.22/dfl/conv/Conv_output_0,/model.22/Sigmoid_output_0
+cp ml/weights/linq/yolov8n-pose-cut/yolov8n-pose_tail.onnx ml/weights/linq/yolov8n-cut/yolov8n_tail.onnx ml/weights/
 ```
+
+Бэкенд `linq` ищет хвост рядом с весами ONNX из `configs/models.yaml` по имени `<имя весов>_tail.onnx`.
 
 Скрипт `compile_tpu.py` повторяет `~/linq/tpu_framework/compile.py`: оптимизация, калибровка `calibrate_torch` на реальных кадрах, квантование, компиляция `TPU_H1M` с пресетом `O1`. Разрез графа выполняет `get_sub_model` (`FW`, гл. 8). Экспорт `.pt2` из `compile.py` не нужен для компиляции и пропущен.
 
@@ -90,6 +97,10 @@ def split(model: onnx.ModelProto, cut: list[str], out_dir: Path, name: str) -> o
     inputs = [i.name for i in model.graph.input]
     outputs = [o.name for o in model.graph.output]
     tail = get_sub_model(model=model, ordered_input_names=cut, ordered_output_names=outputs)
+    used = {name for node in tail.graph.node for name in node.input}
+    kept = [init for init in tail.graph.initializer if init.name in used]
+    del tail.graph.initializer[:]
+    tail.graph.initializer.extend(kept)
     onnx.save(tail, out_dir / f"{name}_tail.onnx")
     head = get_sub_model(model=model, ordered_input_names=inputs, ordered_output_names=cut)
     onnx.save(head, out_dir / f"{name}_head.onnx")
@@ -155,13 +166,16 @@ if __name__ == "__main__":
 |---|---|---|---|---|
 | голова графа, используется | `ml/weights/yolov8n-pose_head_b1_o1_h1m.tpu` | 2.8 МБ | 99 с, из них квантование 52 с | `images`; `/model.22/dfl/conv/Conv_output_0` `[1, 1, 4, 8400]`, `/model.22/Sigmoid_output_0` `[1, 1, 8400]`, `/model.22/Sigmoid_1_output_0` `[1, 17, 1, 8400]`, `/model.22/Mul_4_output_0` `[1, 17, 2, 8400]` |
 | полный граф, не используется | `ml/weights/yolov8n-pose_b1_o1_h1m.tpu` | 2.8 МБ | 107 с, из них квантование 58 с | `images`; `output0` `[1, 56, 8400]` |
+| `yolov8n`, голова графа, используется | `ml/weights/yolov8n_head_b1_o1_h1m.tpu` | 2.7 МБ | 94 с, из них квантование 58 с | `images`; `/model.22/dfl/conv/Conv_output_0` `[1, 1, 4, 8400]`, `/model.22/Sigmoid_output_0` `[1, 80, 8400]` |
 
 - Точность квантования: int8, вход `images` с масштабом 127 (`ml/weights/linq/yolov8n-pose-cut/scales.json`).
-- Компилятор принял все слои обоих вариантов, ошибок нет.
+- Компилятор принял все слои всех вариантов, ошибок нет.
 
 ## Части графа на CPU
 
 Начало графа до узлов разреза выполняется на TPU. Хвост `ml/weights/yolov8n-pose_tail.onnx` выполняется ONNX Runtime на CPU: 13 узлов (`Reshape`, `Slice`, `Sub`, `Add`, `Div`, `Mul`, `Concat`), декодирование боксов из DFL и сборка `output0` `[1, 56, 8400]`. Входы хвоста совпадают по именам и формам с выходами программы. Узлы разреза соответствуют сноске 6 к `yolov8n_pose` в `FW`, гл. 6, с. 36.
+
+Для `yolov8n` хвост `ml/weights/yolov8n_tail.onnx` так же декодирует боксы из DFL и собирает `output0` `[1, 84, 8400]` из боксов и 80 оценок классов. Без разреза в `output0` склеены пиксели и оценки 0..1, как у pose.
 
 Полный граф не используется. После квантования единый выход `output0` получает общий масштаб для координат точек и их уверенностей. Уверенности всех 17 точек становятся 0, координаты точек идут шагом около 3 px.
 
@@ -174,24 +188,66 @@ if __name__ == "__main__":
 | Средняя ошибка координат точек | 1.8–2.6 px | 0.7–2.0 px |
 | Средняя ошибка уверенности точек | 0.69–0.93 | 0.003–0.012 |
 
+`yolov8n`, голова + хвост на CPU, та же проверка (`check_cut_det.py`): класс лучшего якоря совпадает на 10 кадрах из 10, IoU его бокса 0.957–0.982, средняя ошибка бокса 1.2–1.8 px, средняя ошибка оценки класса 0.017–0.121.
+
 ## Предупреждения
 
 - Калибровка выдала рекомендацию включить `zero_point` через `zp_cfg` для 50 матричных слоёв (`Consider enabling zero_point for these matrix layers via zp_cfg`). Не применялась.
 - `NNPACK: Unsupported hardware` в контейнере под эмуляцией x86_64. На результат не влияет.
-- Файл `yolov8n-pose_tail.onnx` весит 13 МБ: `get_sub_model` сохраняет все инициализаторы исходной модели.
+- `get_sub_model` сохраняет в хвосте все инициализаторы исходной модели: хвост весил 13 МБ, а ONNX Runtime при загрузке выводил предупреждение на каждый лишний инициализатор. `compile_tpu.py` удаляет неиспользуемые инициализаторы, хвост весит 170 КБ.
 
 ## Загрузка и проверка на TPU
 
-- Загрузка выполнена через интерфейс Jupyter: файл `ml/weights/yolov8n-pose_head_b1_o1_h1m.tpu` загружен в рабочую папку и скопирован командой `! cp yolov8n-pose_head_b1_o1_h1m.tpu /auto/cache/<LOGIN>/`.
-- Проверка с Mac: `set -a; source .env; set +a; .venv/bin/python notebooks/linq_check.py --program yolov8n-pose_head_b1_o1_h1m.tpu --input data/videos/calib/0050.npy --input-name images`:
-
-```
-выход /model.22/Sigmoid_output_0: форма (1, 1, 8400)
-выход /model.22/Mul_4_output_0: форма (1, 17, 2, 8400)
-выход /model.22/Sigmoid_1_output_0: форма (1, 17, 1, 8400)
-выход /model.22/dfl/conv/Conv_output_0: форма (1, 1, 4, 8400)
-время запроса: 3820 мс
-```
-
+- Загрузка выполняется через интерфейс Jupyter: файл программы загрузить в рабочую папку и выполнить `! cp <программа>.tpu /auto/cache/<LOGIN>/`. Загружены `yolov8n-pose_head_b1_o1_h1m.tpu` и `yolov8n_head_b1_o1_h1m.tpu`.
+- Программа pose на TPU вернула 4 выхода тех же форм, что у головы графа: `(1, 1, 8400)`, `(1, 17, 2, 8400)`, `(1, 17, 1, 8400)`, `(1, 1, 4, 8400)`.
 - Выходы TPU (float32), пропущенные через `yolov8n-pose_tail.onnx`, против исходного ONNX на кадрах `0000`, `0050`, `0100`, `0150`, `0225`: IoU бокса с максимальной уверенностью 0.95–0.99, средняя ошибка бокса 0.8–2.2 px, координат точек 0.7–2.0 px, уверенности точек 0.004–0.012. Значения совпадают с torch-графом SDK из таблицы выше.
-- Время одного запроса с Mac через VPN: 3.2–4.1 с. Вход float32 `(1, 3, 640, 640)` занимает 4.9 МБ. Для resnet50 со входом 0.6 МБ запрос занимает 0.7–1.2 с (`notebooks/linq.md`, «Проверка»).
+- Вход float16 сервис не принимает: `Data for tensor "images" must have <class 'numpy.float32'> dtype, got float16`.
+
+### Бэкенд `linq`
+
+`set -a; source .env; set +a; .venv/bin/python notebooks/check_detector.py --backend linq`: код 0.
+
+```
+кадр 0 810x1080: {'person': 3, 'bus': 1}
+кадр 1 640x360: {'person': 3}
+last_timing, мс: {'pre': 5.4, 'infer': 18116.5, 'post': 16.3}
+check_detector: ok
+```
+
+`.venv/bin/python notebooks/compare_backends.py`, первые 20 кадров `data/videos/calib/`, 2 мин 39 с:
+
+| Метрика | Значение | Критерий ML-4 |
+|---|---|---|
+| Объектов `onnx` / `linq` | 46 / 45 | — |
+| Пар | 43 | — |
+| IoU пар, среднее / минимальное | 0.953 / 0.909 | среднее > 0.9: выполнен |
+| Без пары `onnx` / `linq` | 3 (6.5 %) / 2 | ≤ 5 % объектов `onnx`: не выполнен |
+| Смещение точек `person` | 9.15 px, кадры 3840×2160 | — |
+
+Объекты без пары, все с уверенностью 0.41–0.58 при пороге 0.4:
+
+| Кадр | Бэкенд | Класс | `conf` |
+|---|---|---|---|
+| `0001.jpg` | только `linq` | `truck` | 0.41 |
+| `0004.jpg` | только `onnx` | `truck` | 0.58 |
+| `0011.jpg` | только `onnx` | `person` | 0.45 |
+| `0014.jpg` | только `linq` | `truck` | 0.54 |
+| `0015.jpg` | только `onnx` | `person` | 0.47 |
+
+### Время запроса к TPU с Mac
+
+| Замер | Маршрут OpenVPN | Запрос pose | Запрос det | `inference_time` воркера |
+|---|---|---|---|---|
+| до, 24.10 00:00–00:30, 9 запросов | через Amnezia | 3.2–4.7 с | — | 2–11 мс |
+| после, 24.10 00:45–00:55, 9 запросов pose, 5 det | напрямую через `en0` | 3.3–5.4 с | 5.3–6.8 с | 2–80 мс |
+
+Разбивка запроса pose после изменения маршрута, 4 запроса:
+
+| Этап | Время |
+|---|---|
+| Подключение к брокеру | 361–445 мс |
+| Отправка тела 4.69 МБ | 1440–3193 мс |
+| Ожидание ответа 1.79 МБ, включая расчёт | 1441–2180 мс |
+| Расчёт на TPU (`inference_time`) | 7–28 мс |
+
+Время запроса определяется передачей данных по каналу OpenVPN (`proto tcp-client`). Маршрут мимо Amnezia время не изменил. Для resnet50 со входом 0.6 МБ запрос занимает 0.7–1.2 с (`notebooks/linq.md`, «Проверка»).

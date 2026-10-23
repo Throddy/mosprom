@@ -16,5 +16,6 @@ def create_detector(backend: str | None = None) -> Detector:
         from ml.backends.onnx_rt import OnnxDetector
         return OnnxDetector(models_cfg, ROOT)
     if backend == "linq":
-        raise NotImplementedError("ML-4")
+        from ml.backends.linq import LinqDetector
+        return LinqDetector(models_cfg, ROOT)
     raise ValueError(f"неизвестный бэкенд детектора: {backend}")

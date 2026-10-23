@@ -5,3 +5,5 @@ onnxruntime
 opencv-python
 numpy
 pyyaml
+pika
+protobuf
