@@ -36,6 +36,56 @@ export interface WsMessage {
   event: EventView
 }
 
+export interface Zone {
+  id: string
+  name: string
+  polygon: [number, number][]
+}
+
+export interface RuleConfig {
+  type: string
+  enabled: boolean
+  zone: string | null
+  schedule: [string, string] | null
+  params: Record<string, unknown>
+}
+
+export interface Camera {
+  id: string
+  name: string
+  source: string
+  fps: number
+  zones: Zone[]
+  rules: RuleConfig[]
+}
+
+// Описание правила из GET /api/rules, раздел 5
+export interface RuleSpec {
+  type: string
+  title: string
+  severity: Severity
+  needs_zone: boolean
+  params: { name: string; type: string; unit: string; default: unknown }[]
+}
+
+// Параметры GET /api/events; from и to в unix-секундах
+export interface EventsQuery {
+  type?: string
+  camera_id?: string
+  zone_id?: string
+  status?: string
+  severity?: string
+  from?: number
+  to?: number
+  limit?: number
+  offset?: number
+}
+
+export interface Stats {
+  total: number
+  by_type: Record<string, number>
+}
+
 export interface Status {
   detector: string
   backend: string

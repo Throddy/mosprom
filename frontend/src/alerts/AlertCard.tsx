@@ -1,7 +1,8 @@
-import { useState } from 'react'
 import type { EventStatus, EventView } from '../api/types.ts'
-import { ACTIONS, SEVERITY_LABEL, STATUS_LABEL } from './feed.ts'
-import { formatDuration, formatTs } from './format.ts'
+import { Snapshot } from '../components/Snapshot.tsx'
+import { StatusActions } from '../components/StatusActions.tsx'
+import { SEVERITY_LABEL, STATUS_LABEL } from './feed.ts'
+import { formatDuration, formatTs, zoneLabel } from './format.ts'
 
 interface Props {
   event: EventView
@@ -9,10 +10,11 @@ interface Props {
   pending: EventStatus | undefined
   error: string | undefined
   onStatus: (event: EventView, status: EventStatus) => void
+  onDetails: (event: EventView) => void
 }
 
-export function AlertCard({ event, fresh, pending, error, onStatus }: Props) {
-  const zone = event.zone_name ?? event.zone_id
+export function AlertCard({ event, fresh, pending, error, onStatus, onDetails }: Props) {
+  const zone = zoneLabel(event)
   const classes = ['alert', `sev-${event.severity}`, `status-${event.status}`]
   if (fresh) classes.push('fresh')
 
@@ -51,42 +53,12 @@ export function AlertCard({ event, fresh, pending, error, onStatus }: Props) {
             </>
           )}
         </dl>
+        <button type="button" className="link-btn" onClick={() => onDetails(event)}>
+          Подробнее
+        </button>
       </div>
 
-      <div className="alert-actions" role="group" aria-label="Решение оператора">
-        {ACTIONS.map((status) => {
-          const current = event.status === status
-          return (
-            <button
-              key={status}
-              type="button"
-              className={`btn btn-${status}`}
-              aria-pressed={current}
-              disabled={current || pending !== undefined}
-              onClick={() => onStatus(event, status)}
-            >
-              {pending === status ? 'Сохранение…' : STATUS_LABEL[status]}
-            </button>
-          )
-        })}
-        {error && (
-          <p className="alert-error" role="alert">
-            Статус не сохранён: {error}
-          </p>
-        )}
-      </div>
+      <StatusActions event={event} pending={pending} error={error} onStatus={onStatus} />
     </article>
-  )
-}
-
-function Snapshot({ url, title }: { url: string | null; title: string }) {
-  const [failed, setFailed] = useState(false)
-  if (!url || failed) {
-    return <div className="alert-snap alert-snap-empty">Снимка нет</div>
-  }
-  return (
-    <a className="alert-snap" href={url} target="_blank" rel="noreferrer" title="Открыть снимок">
-      <img src={url} alt={`Снимок: ${title}`} loading="lazy" onError={() => setFailed(true)} />
-    </a>
   )
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { eventsSocketUrl, getEvents, patchEvent } from '../api/client.ts'
+import { errorText, eventsSocketUrl, getEvents, patchEvent } from '../api/client.ts'
 import type { EventStatus, EventView, WsMessage } from '../api/types.ts'
 import { applyMessage, parseMessage, upsert, type FeedEvents } from './feed.ts'
 
@@ -23,6 +23,8 @@ export interface AlertFeed {
   fresh: Record<string, true>
   setStatus: (event: EventView, status: EventStatus) => void
   reload: () => void
+  // Подписка на сообщения /ws/events для других страниц; возвращает отписку
+  subscribe: (listener: (msg: WsMessage) => void) => () => void
 }
 
 function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
@@ -30,10 +32,6 @@ function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
   const next = { ...rec }
   delete next[key]
   return next
-}
-
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
 }
 
 // Синхронизация: при каждом открытии WebSocket лента перечитывается через GET /api/events.
@@ -48,6 +46,7 @@ export function useAlertFeed(): AlertFeed {
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({})
   const [fresh, setFresh] = useState<Record<string, true>>({})
   const syncRef = useRef<() => void>(() => {})
+  const listenersRef = useRef(new Set<(msg: WsMessage) => void>())
 
   useEffect(() => {
     let disposed = false
@@ -80,7 +79,7 @@ export function useAlertFeed(): AlertFeed {
       controller?.abort()
       controller = new AbortController()
       syncing = true
-      getEvents(SYNC_LIMIT, controller.signal)
+      getEvents({ limit: SYNC_LIMIT }, controller.signal)
         .then((page) => {
           if (disposed || gen !== syncGen) return
           synced = true
@@ -117,6 +116,7 @@ export function useAlertFeed(): AlertFeed {
         if (!msg) return
         if (syncing) queue.push(msg)
         else apply(msg)
+        listenersRef.current.forEach((listener) => listener(msg))
       }
       ws.onclose = () => {
         if (disposed || socket !== ws) return
@@ -158,5 +158,13 @@ export function useAlertFeed(): AlertFeed {
 
   const reload = useCallback(() => syncRef.current(), [])
 
-  return { events, loaded, loadError, connection, pending, actionErrors, fresh, setStatus, reload }
+  const subscribe = useCallback((listener: (msg: WsMessage) => void) => {
+    const listeners = listenersRef.current
+    listeners.add(listener)
+    return () => {
+      listeners.delete(listener)
+    }
+  }, [])
+
+  return { events, loaded, loadError, connection, pending, actionErrors, fresh, setStatus, reload, subscribe }
 }

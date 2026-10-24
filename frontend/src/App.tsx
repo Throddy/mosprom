@@ -1,5 +1,10 @@
+import { useEffect, useMemo } from 'react'
 import { AlertFeed } from './alerts/AlertFeed.tsx'
+import { useAlertFeed } from './alerts/useAlertFeed.ts'
 import { useServerStatus, type ServerStatus } from './api/useServerStatus.ts'
+import { CamerasPage } from './cameras/CamerasPage.tsx'
+import { JournalPage } from './journal/JournalPage.tsx'
+import { routeHref, useRoute, type Page } from './router.ts'
 
 // Значения Status.backend из CONTRACT.md, раздел 4
 const DETECTOR_BACKENDS: Record<string, string> = {
@@ -7,8 +12,25 @@ const DETECTOR_BACKENDS: Record<string, string> = {
   linq: 'LinQ TPU',
 }
 
+const NAV: { page: Page; title: string }[] = [
+  { page: 'alerts', title: 'Лента тревог' },
+  { page: 'journal', title: 'Журнал событий' },
+  { page: 'cameras', title: 'Камеры' },
+]
+
+const BASE_TITLE = document.title
+
 export default function App() {
   const server = useServerStatus()
+  // Лента и её WebSocket живут на уровне приложения: тревоги приходят на любой странице
+  const feed = useAlertFeed()
+  const route = useRoute()
+
+  const unhandled = useMemo(() => Object.values(feed.events).filter((e) => e.status === 'new').length, [feed.events])
+
+  useEffect(() => {
+    document.title = unhandled ? `(${unhandled}) ${BASE_TITLE}` : BASE_TITLE
+  }, [unhandled])
 
   return (
     <div className="app">
@@ -20,8 +42,27 @@ export default function App() {
         <ServerInfo server={server} />
       </header>
 
+      <nav className="nav" aria-label="Разделы">
+        {NAV.map((item) => (
+          <a
+            key={item.page}
+            href={routeHref(item.page)}
+            aria-current={route.page === item.page ? 'page' : undefined}
+          >
+            {item.title}
+            {item.page === 'alerts' && unhandled > 0 && (
+              <span className="nav-count" aria-label={`необработанных: ${unhandled}`}>
+                {unhandled}
+              </span>
+            )}
+          </a>
+        ))}
+      </nav>
+
       <main>
-        <AlertFeed />
+        {route.page === 'alerts' && <AlertFeed feed={feed} />}
+        {route.page === 'journal' && <JournalPage params={route.params} subscribe={feed.subscribe} />}
+        {route.page === 'cameras' && <CamerasPage params={route.params} server={server} />}
       </main>
     </div>
   )

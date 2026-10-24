@@ -1,24 +1,19 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
+import { EventDetails } from '../components/EventDetails.tsx'
 import { AlertCard } from './AlertCard.tsx'
 import { sortFeed } from './feed.ts'
-import { useAlertFeed, type Connection } from './useAlertFeed.ts'
+import type { AlertFeed as Feed, Connection } from './useAlertFeed.ts'
 
 type View = 'all' | 'new'
 
-const BASE_TITLE = document.title
-
-export function AlertFeed() {
-  const feed = useAlertFeed()
+export function AlertFeed({ feed }: { feed: Feed }) {
   const [view, setView] = useState<View>('all')
+  const [detailsId, setDetailsId] = useState<string | null>(null)
 
   const sorted = useMemo(() => sortFeed(feed.events), [feed.events])
   const unhandled = useMemo(() => sorted.filter((e) => e.status === 'new'), [sorted])
   const unhandledCritical = unhandled.filter((e) => e.severity === 'critical').length
   const shown = view === 'new' ? unhandled : sorted
-
-  useEffect(() => {
-    document.title = unhandled.length ? `(${unhandled.length}) ${BASE_TITLE}` : BASE_TITLE
-  }, [unhandled.length])
 
   return (
     <section className="feed" aria-labelledby="feed-title">
@@ -72,15 +67,27 @@ export function AlertFeed() {
               pending={feed.pending[event.id]}
               error={feed.actionErrors[event.id]}
               onStatus={feed.setStatus}
+              onDetails={(e) => setDetailsId(e.id)}
             />
           ))}
         </div>
+      )}
+
+      {detailsId && (
+        <EventDetails
+          eventId={detailsId}
+          event={feed.events[detailsId] ?? null}
+          pending={feed.pending[detailsId]}
+          error={feed.actionErrors[detailsId]}
+          onStatus={feed.setStatus}
+          onClose={() => setDetailsId(null)}
+        />
       )}
     </section>
   )
 }
 
-function ConnectionState({ connection }: { connection: Connection }) {
+export function ConnectionState({ connection }: { connection: Connection }) {
   if (connection.state === 'open') {
     return (
       <span className="conn">
