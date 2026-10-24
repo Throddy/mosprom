@@ -5,6 +5,7 @@ from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
 from core.schemas import BBox, Detection
+from ml.crops import Model, add_tile_persons
 
 
 class OnnxDetector:
@@ -16,6 +17,7 @@ class OnnxDetector:
         self._det = YOLO(str(root / det_cfg["weights"]), task="detect")
         det_class_ids = [i for i, name in self._det.names.items() if name in det_cfg["classes"]]
         self._pose_args = {"imgsz": pose_cfg["imgsz"], "conf": pose_cfg["conf"]}
+        self._tiles = pose_cfg.get("tiles")
         self._det_args = {
             "imgsz": det_cfg["imgsz"],
             "conf": det_cfg["conf"],
@@ -30,9 +32,16 @@ class OnnxDetector:
         for image in images:
             pose_result = _predict(self._pose, image, self._pose_args, timing)
             det_result = _predict(self._det, image, self._det_args, timing)
-            detections.append(_persons(pose_result) + _vehicles(det_result))
+            persons = add_tile_persons(image, _persons(pose_result), self._pose_model(timing),
+                                       self._tiles)
+            detections.append(persons + _vehicles(det_result))
         self.last_timing = timing
         return detections
+
+    def _pose_model(self, timing: dict[str, float]) -> Model:
+        def run(crops: list[np.ndarray]) -> list[list[Detection]]:
+            return [_persons(_predict(self._pose, crop, self._pose_args, timing)) for crop in crops]
+        return run
 
 
 def _predict(model: YOLO, image: np.ndarray, args: dict, timing: dict[str, float]) -> Results:
