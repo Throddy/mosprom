@@ -1,5 +1,5 @@
 models:
   pose: {weights: ml/weights/yolov8n-pose.onnx, imgsz: 640, conf: 0.4}
   det: {weights: ml/weights/yolov8n.onnx, imgsz: 640, conf: 0.4,
-        classes: {2: car, 5: bus, 7: truck, 67: phone}, class_conf: {phone: 0.25}}
+        classes: {2: car, 5: bus, 7: truck, 67: phone}, class_conf: {phone: 0.35}}
   linq: {pose_program: yolov8n-pose_head_b1_o1_h1m.tpu, det_program: yolov8n_head_b1_o1_h1m.tpu}
