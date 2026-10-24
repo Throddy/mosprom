@@ -18,6 +18,9 @@
 | `fall_02.mov` | `fall` | 7.0–24.0 |
 | `running_03.mov` | `running` | 2.5–6.7 |
 | `danger_zone_02.mov` | `danger_zone` | 8.0–18.0 |
+| `running_04.mov` | `running` | 1.0–6.7 |
+
+Метрики ML-7 по `running_04.mov` ещё не пересчитаны.
 
 ## Видео без нарушений
 

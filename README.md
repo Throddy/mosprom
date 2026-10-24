@@ -154,7 +154,7 @@ DETECTOR_BACKEND=linq .venv/bin/python scripts/run_offline.py --video data/video
 | Команда | Что проверяет |
 |---|---|
 | `python scripts/smoke.py` | `data/demo.mp4` на `onnx`: у `cam1` одно событие `fall` и одно `danger_zone`, у `cam2` одно `fall` и ни одного `running`; при успехе `smoke: ok` |
-| `python scripts/eval_offline.py --labels ... --videos ...` | подбор порогов: видео против разметки, события, tp, fp, fn, задержка тревоги; без аргументов скрипт читает `data/videos/test/` и `data/videos/test/labels.csv` |
+| `python scripts/eval_offline.py --labels ... --videos ...` | подбор порогов: видео против разметки, события, tp, fp, fn, задержка тревоги; без аргументов скрипт читает `data/videos/dev/` и `data/videos/dev/labels.csv` |
 | `python ml/metrics.py --videos data/videos/test --events ... --out ...` | метрики ML-7 на контрольном наборе: precision и recall по типам из файлов событий `run_offline`, разметка по умолчанию `data/test_set/labels.csv` |
 | `python scripts/check_api.py` | API бэкенда |
 | `python scripts/check_logic.py` | трекер и движок событий на синтетических детекциях |
@@ -173,7 +173,7 @@ DETECTOR_BACKEND=linq .venv/bin/python scripts/run_offline.py --video data/video
 - Видео: [общая папка Google Drive](https://drive.google.com/drive/folders/1C3LXUnZaJUyxtx8AN3Qvn1urIRsPHx4e?usp=sharing). В git они не попадают.
 - `data/videos/dev/`: видео для подбора порогов.
 - `data/videos/test/`: независимый контрольный набор для метрик ML-7.
-- Разметка контрольного набора: `data/test_set/labels.csv`, формат `video,type,t_start,t_end`, время в секундах от начала видео. В ней `fall_02.mov`, `running_02.mov` и `danger_zone_02.mov`. Видео без нарушений строк не имеют.
+- Разметка контрольного набора: `data/test_set/labels.csv`, формат `video,type,t_start,t_end`, время в секундах от начала видео. В ней `fall_02.mov`, `running_03.mov`, `running_04.mov` и `danger_zone_02.mov`. Видео без нарушений строк не имеют.
 - Описание наборов и видео без нарушений: `data/test_set/README.md`.
 - Видео для smoke-теста и демо-камер: `data/demo.mp4`.
 
@@ -197,11 +197,11 @@ DETECTOR_BACKEND=linq .venv/bin/python scripts/run_offline.py --video data/video
 
 | Прогон | Результат |
 |---|---|
-| Предварительный прогон ML-7, `fall`, `onnx`, 3 видео, которые теперь относятся к dev, до подбора порогов | tp 1, fp 0, fn 0; тревога через 5.5 с после начала падения; 0 ложных тревог на 43 с видео без падений |
+| ML-7, контрольный набор `data/videos/test/`, `onnx`, пороги подобраны на dev | `fall` на `fall_02.mov` обнаружен, тревога через 3.3 с; `danger_zone` на `danger_zone_02.mov` обнаружена, тревога через 1.6 с; `running` на `running_03.mov` не обнаружен; на сцене без нарушений `normal_walking.MOV` 0 тревог |
 | BE-11, видео dev, после подбора порогов | `fall` tp 1, задержка 3.5 с; `danger_zone` tp 1, 0.9 с; `running` tp 1, 3.3 с; fp 0, fn 0 |
 | ML-4d, `fall.mov` (dev) на LinQ через ретранслятор, 3 кадра/с | падение найдено, тревога через 6.2 с после начала падения; на `onnx` при 10 кадрах/с 5.5 с |
 
-Метрики на контрольном наборе `data/videos/test/` с разметкой `data/test_set/labels.csv` ожидают пересчёта ML-7. Сейчас `reports/metrics.json` содержит предварительный прогон из первой строки таблицы.
+Метрики ML-7 записаны в `reports/metrics.json`, подробности в `ml/README.md`, раздел «Метрики». На `running_03.mov` в фазе бега силуэт смазан и детектор теряет человека, поэтому правилу нечего измерять. `running_04.mov` добавлен в разметку контрольного набора позже, по нему результатов пока нет.
 
 Задержка тревоги в основном состоит из ожидания правила: для `fall` это проверка неподвижности, заданная против ложных тревог.
 
@@ -212,7 +212,7 @@ DETECTOR_BACKEND=linq .venv/bin/python scripts/run_offline.py --video data/video
 ## Ограничения
 
 - Живые тревоги на LinQ через облачный стенд не успевают за видео: 0.80 кадра/с и 5–10 с на кадр. Очередь сервиса общая для всех команд.
-- Имеющиеся метрики посчитаны на видео dev, по которым подбирались пороги, поэтому они не являются независимой оценкой. Метрики на контрольном наборе ожидают пересчёта ML-7.
+- Метрики ML-7 посчитаны по одному контрольному видео на `fall`, `running` и `danger_zone` и одной сцене без нарушений. Бег со смазанным силуэтом пока не обнаруживается.
 - В контрольной разметке нет `proximity`: видео с погрузчиком `proximity.mp4` относится к dev.
 - Модели не дообучались. Погрузчик детектируется классом COCO `truck`.
 - `proximity` срабатывает и рядом с припаркованной техникой: движение техники не учитывается.
