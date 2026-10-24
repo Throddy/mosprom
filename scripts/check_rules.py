@@ -286,6 +286,36 @@ def run_zone():
     expect(len(inside.of("running")) == 1, f"inside {len(inside.of('running'))} events")
 
 
+def body(fx: float, fy: float, w: float, h: float, lying_t: float = 0.0) -> Detection:
+    """Человек с боксом w x h, точка ног (fx, fy). Плечи над бёдрами при lying_t = 0,
+    на одной высоте при lying_t = 1 (линейный переход)."""
+    x1, y1 = fx - w / 2, fy - h
+    cx, cy = fx, fy - h / 2
+    half = 0.2 * max(w, h)
+    # Вектор плечи -> бёдра поворачивается от вертикали к горизонтали
+    dx, dy = half * lying_t, half * (1 - lying_t)
+    kpts = _kpts({5: (cx - dx - 8, cy - dy), 6: (cx - dx + 8, cy - dy),
+                  11: (cx + dx - 8, cy + dy), 12: (cx + dx + 8, cy + dy)})
+    return Detection(cls="person", conf=0.9, bbox=(x1, y1, fx + w / 2, fy), kpts=kpts)
+
+
+def run_depth():
+    # Бег к камере: точка ног на месте, высота растёт со 150 до 300 px за 1 с и дальше в том же темпе
+    run = run_rule(3.0, lambda i: [body(640, 700, 60 + 6 * i, 150 + 15 * i)])
+    expect(len(run.of("running")) == 1, f"{len(run.of('running'))} events")
+
+
+def run_depth_fall():
+    # Стоит 1.5 с, за 0.5 с падает: высота 300 -> 100, ширина 100 -> 300, корпус ложится, лежит 2 с
+    def make(i):
+        if i < 15:
+            return [body(640, 600, 100, 300)]
+        p = min((i - 15) / 5, 1.0)
+        return [body(640, 600, 100 + 200 * p, 300 - 200 * p, lying_t=p)]
+    run = run_rule(4.0, make)
+    expect(len(run.of("running")) == 0, f"{len(run.of('running'))} events")
+
+
 def registry4():
     types = sorted(r["type"] for r in describe())
     expect(types == ["danger_zone", "fall", "proximity", "running"], f"{types}")
@@ -310,6 +340,8 @@ if __name__ == "__main__":
     check("run_walk", run_walk)
     check("run_jitter", run_jitter)
     check("run_zone", run_zone)
+    check("run_depth", run_depth)
+    check("run_depth_fall", run_depth_fall)
     check("registry4", registry4)
     check("demo_fall", demo_fall)
     check("demo_no_running", demo_no_running)
