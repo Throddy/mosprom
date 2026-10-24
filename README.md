@@ -17,6 +17,11 @@
 - `STRUCTURE.md`: структура репозитория.
 - `GIT.md`: работа с git.
 
+## Тестовые данные
+
+- Видео: [общая папка Google Drive](https://drive.google.com/drive/folders/1C3LXUnZaJUyxtx8AN3Qvn1urIRsPHx4e?usp=sharing). Локально видео кладутся в `data/videos/test/`, в git они не попадают.
+- Разметка: `data/test_set/labels.csv`, формат `video,type,t_start,t_end`, время в секундах от начала видео.
+
 ## Запуск
 
 Полный порядок запуска будет описан в задаче FE-8.
