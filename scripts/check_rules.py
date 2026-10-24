@@ -258,16 +258,26 @@ def prox_two():
     expect(len(run.of("proximity")) == 1, f"{len(run.of('proximity'))} events")
 
 
+# Водитель: бокс 60x120 целиком внутри бокса грузовика 300x200 (y 300..500), точка ног на y 450 —
+# на 50 px (25 % высоты грузовика) выше нижнего края, то есть в кабине (cab_min 0.15)
+DRIVER = Detection(cls="person", conf=0.9, bbox=(720.0, 330.0, 780.0, 450.0))
+
+
 def prox_driver():
-    # Водитель: бокс 60x120 целиком внутри бокса грузовика 300x200
-    driver = Detection(cls="person", conf=0.9, bbox=(720.0, 360.0, 780.0, 480.0))
-    run = prox_run(3.0, lambda i: [driver, truck()])
+    run = prox_run(3.0, lambda i: [DRIVER, truck()])
     expect(len(run.of("proximity")) == 0, f"{len(run.of('proximity'))} events")
+
+
+def prox_front():
+    # Пешеход 60x120 на полу прямо перед грузовиком: бокс внутри бокса грузовика, точка ног у нижнего края
+    pedestrian = Detection(cls="person", conf=0.9, bbox=(720.0, 380.0, 780.0, 500.0))
+    run = prox_run(3.0, lambda i: [pedestrian, truck()])
+    expect(len(run.of("proximity")) == 1, f"{len(run.of('proximity'))} events")
 
 
 def prox_pedestrian():
     # Водитель в кабине и пешеход снаружи на 0.5 роста: событие только у пешехода
-    driver = Detection(cls="person", conf=0.9, bbox=(720.0, 360.0, 780.0, 480.0))
+    driver = DRIVER
     run = prox_run(3.0, lambda i: [driver, person(500, 500), truck()])
     events = run.of("proximity")
     expect(len(events) == 1, f"{len(events)} events")
@@ -394,6 +404,7 @@ if __name__ == "__main__":
     check("run_jitter", run_jitter)
     check("run_zone", run_zone)
     check("prox_driver", prox_driver)
+    check("prox_front", prox_front)
     check("prox_pedestrian", prox_pedestrian)
     check("run_stand_up", run_stand_up)
     check("run_depth", run_depth)
