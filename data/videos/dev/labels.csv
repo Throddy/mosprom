@@ -1,0 +1,6 @@
+video,type,t_start,t_end
+fall.mov,fall,6.5,19.5
+running.mov,running,7.5,12.5
+danger_zone.mov,danger_zone,7.5,18
+running_02.mov,running,7.0,12.0
+proximity.mp4,proximity,0.0,3.0

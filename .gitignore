@@ -8,8 +8,6 @@ ml/weights/
 backend/media/
 backend/data/
 configs/cameras.local.yaml
-data/videos/*
-!data/videos/demo/
 *.pt
 *.onnx
 *.tpu
