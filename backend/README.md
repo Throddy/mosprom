@@ -190,7 +190,12 @@ python scripts/check_logic.py
 
 ### Подбор порогов
 
-Набор для настройки: `data/videos/test/` (`fall.mov`, `running.mov`, `danger_zone.mov`, `labels.csv`), камеры `test_*` в `configs/cameras.test.yaml`. Контрольный набор ML-7 для подбора не используется.
+| Набор | Видео | Разметка | Назначение |
+|---|---|---|---|
+| Для настройки | `data/videos/test/`: `fall.mov`, `running.mov`, `danger_zone.mov`, `normal_sit_stand.mov`, `proximity.mp4` | `data/videos/test/labels.csv`, локально, вне git | подбор порогов, камеры `test_*` в `configs/cameras.test.yaml` |
+| Контрольный | `data/videos/holdout/` | `data/test_set/labels.csv` | только метрики ML-7, для подбора не используется |
+
+`eval_offline.py` обходит все видео папки (`.mov`, `.MOV`, `.mp4`, `.MP4`). Видео без строк в разметке считаются сценами без нарушений: любое событие на них — ложная тревога. Камера для видео: `test_<имя без расширения>`, иначе `test_<type>` по разметке, иначе `test_normal`.
 
 Условия для любых порогов: 0 ложных тревог на всех видео набора и на `data/demo.mp4` для `cam1` и `cam2`, все проверки `check_rules.py` проходят.
 
@@ -229,12 +234,29 @@ python scripts/check_logic.py
 
 Выбрано `depth_k` 5, `speed` 1.5: из подходящих пар наибольший `speed`. При `depth_k` 5 и `speed` 1.0 три ложных `running` дают `fall.mov` и `danger_zone.mov`, если включить на них правило `running`.
 
-Итог `python scripts/eval_offline.py`: `fall` tp 1 (задержка 3.5 с), `danger_zone` tp 1 (0.9 с), `running` tp 1 (3.3 с), fp 0, fn 0.
+Итог `python scripts/eval_offline.py` (BE-11c, 5 видео, 100.7 с, пороги BE-11b):
+
+| Видео | Разметка | События | tp | fp | fn |
+|---|---|---|---|---|---|
+| `danger_zone.mov` | `danger_zone` 7.5–18.0 | `danger_zone` 7.4–17.9 | 1 | 0 | 0 |
+| `fall.mov` | `fall` 6.5–19.5 | `fall` 8.5–19.9 | 1 | 0 | 0 |
+| `running.mov` | `running` 7.5–12.5 | `running` 9.8–12.1 | 1 | 0 | 0 |
+| `normal_sit_stand.mov` | нет | `running` 8.1–9.8 (`depth` 1.61) | 0 | 1 | 0 |
+| `proximity.mp4` | нет | `proximity` 0.7–1.7 и 5.0–12.1 (`dist` 0.0) | 0 | 2 | 0 |
+
+`negatives`: 2 видео, 24.4 с, `proximity` 2, `running` 1. `fp_per_hour`: всего 107.2, `proximity` 71.5, `running` 35.7, `fall` и `danger_zone` 0.
+
+Разбор ложных тревог, пороги пока не менялись:
+- `proximity.mp4`: детектор видит погрузчик классом `truck` на 77 % кадров. Оба события `proximity` — на водителе погрузчика: его точка ног внутри бокса `truck`, `d_norm` 0. Пешеход ближе 1 роста к погрузчику только на одном кадре (2.6 с, `d_norm` 0.5, бокс погрузчика кратковременно расширился), события от него нет.
+- `normal_sit_stand.mov`: ложный `running` при вставании, компонента по глубине 1.61 при `speed` 1.5.
 
 ```bash
 python scripts/eval_offline.py --trace running
+python scripts/eval_offline.py --only proximity.mp4 --trace proximity
 ```
-`--trace TYPE` печатает по каждому кадру видео этого типа `ts`, `track_id`, точку ног, высоту бокса, скорость `v` и отношение высот бокса за окно.
+- `--trace running` печатает по каждому кадру видео с разметкой `running` `ts`, `track_id`, точку ног, высоту бокса, скорость `v` и отношение высот бокса за окно.
+- `--trace proximity` печатает для камеры `test_proximity` людей (`track_id`, точка ног, высота бокса), технику (`cls`, `track_id`, бокс) и минимальное `d_norm`, в конце сводку: доля кадров с техникой по классам, минимальное `d_norm` и секунда.
+- `--only VIDEO` оценивает одно видео.
 
 Если правило камеры не разбирается (например, неверное `schedule` или нечисловой параметр), движок пропускает только это правило и один раз пишет предупреждение в лог. Трекинг и остальные правила камеры работают.
 
