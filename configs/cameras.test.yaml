@@ -2,25 +2,53 @@
 cameras:
   - id: test_fall
     name: "Тест: падение"
-    source: data/videos/test/fall.mov
+    source: data/videos/dev/fall.mov
     fps: 10
     zones: []
     rules:
       - {type: fall, enabled: true}
   - id: test_running
     name: "Тест: бег"
-    source: data/videos/test/running.mov
+    source: data/videos/dev/running.mov
     fps: 10
     zones: []
     rules:
       - {type: running, enabled: true}
   - id: test_danger_zone
     name: "Тест: опасная зона"
-    source: data/videos/test/danger_zone.mov
+    source: data/videos/dev/danger_zone.mov
     fps: 10
     zones:
       - id: tape
         name: Зона по скотчу
         polygon: [[0.13, 0.97], [0.36, 0.82], [0.28, 0.73], [0.15, 0.69], [0.05, 0.69], [0.05, 1.0]]
+    rules:
+      - {type: danger_zone, enabled: true, zone: tape}
+  - id: test_normal
+    name: "Тест: без нарушений"
+    source: data/videos/dev/normal_sit_stand.mov
+    fps: 10
+    zones: []
+    rules:
+      - {type: fall, enabled: true}
+      - {type: running, enabled: true}
+      - {type: proximity, enabled: true}
+  - id: test_proximity
+    name: "Тест: погрузчик"
+    source: data/videos/dev/proximity.mp4
+    fps: 10
+    zones: []
+    rules:
+      - {type: proximity, enabled: true}
+      - {type: fall, enabled: true}
+      - {type: running, enabled: true}
+  - id: test_danger_zone_02
+    name: "Тест: опасная зона, дубль 2"
+    source: data/videos/test/danger_zone_02.mov
+    fps: 10
+    zones:
+      - id: tape
+        name: Зона по скотчу
+        polygon: [[0.70, 0.71], [0.95, 0.94], [1.0, 0.90], [1.0, 0.65], [0.93, 0.61], [0.82, 0.56], [0.68, 0.60]]
     rules:
       - {type: danger_zone, enabled: true, zone: tape}

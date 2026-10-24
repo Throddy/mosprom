@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { AlertFeed } from './alerts/AlertFeed.tsx'
+import { AnalyticsPage } from './analytics/AnalyticsPage.tsx'
 import { useAlertFeed } from './alerts/useAlertFeed.ts'
 import { useServerStatus, type ServerStatus } from './api/useServerStatus.ts'
 import { CamerasPage } from './cameras/CamerasPage.tsx'
@@ -16,6 +17,7 @@ const NAV: { page: Page; title: string }[] = [
   { page: 'alerts', title: 'Лента тревог' },
   { page: 'journal', title: 'Журнал событий' },
   { page: 'cameras', title: 'Камеры' },
+  { page: 'analytics', title: 'Аналитика' },
 ]
 
 const BASE_TITLE = document.title
@@ -63,6 +65,7 @@ export default function App() {
         {route.page === 'alerts' && <AlertFeed feed={feed} />}
         {route.page === 'journal' && <JournalPage params={route.params} subscribe={feed.subscribe} />}
         {route.page === 'cameras' && <CamerasPage params={route.params} server={server} />}
+        {route.page === 'analytics' && <AnalyticsPage server={server} />}
       </main>
     </div>
   )
