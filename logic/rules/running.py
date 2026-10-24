@@ -48,9 +48,10 @@ def speed_parts(track: TrackState, ts: float, window: float, depth_k: float = 0.
     """(v, v_lat, v_depth) в ростах человека в секунду или None, если история короче 0.8 окна.
 
     v_lat — чистое смещение точки ног, делённое на медианную высоту бокса.
-    v_depth — depth_k * |ln(h_last / h_first)| за секунду: при беге к камере или от неё точка ног
-    смещается мало, а меняется высота бокса. Учитывается, только если человек стоит прямо во всех
-    записях окна: при падении высота бокса тоже резко меняется.
+    v_depth — изменение масштаба бокса за секунду: при беге к камере или от неё точка ног смещается
+    мало, а высота и ширина бокса меняются вместе. Берётся depth_k * min(|ln(h1/h0)|, |ln(w1/w0)|);
+    если высота и ширина меняются в разные стороны или ширина не меняется (вставание), масштаб почти 0.
+    Учитывается, только если человек стоит прямо во всех записях окна: при падении бокс тоже резко меняется.
     """
     records = [r for r in track.history if r[0] >= ts - window]
     if len(records) < 2:
@@ -66,8 +67,12 @@ def speed_parts(track: TrackState, ts: float, window: float, depth_k: float = 0.
     v_lat = sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2) / h / dt
     v_depth = 0.0
     h0, h1 = bbox_height(b0), bbox_height(b1)
-    if depth_k > 0 and h0 > 0 and h1 > 0 and all(is_upright(r, upright_angle, upright_aspect) for r in records):
-        v_depth = depth_k * abs(log(h1 / h0)) / dt
+    w0, w1 = b0[2] - b0[0], b1[2] - b1[0]
+    if depth_k > 0 and min(h0, h1, w0, w1) > 0 \
+            and all(is_upright(r, upright_angle, upright_aspect) for r in records):
+        r_h, r_w = log(h1 / h0), log(w1 / w0)
+        if r_h * r_w > 0:
+            v_depth = depth_k * min(abs(r_h), abs(r_w)) / dt
     return sqrt(v_lat ** 2 + v_depth ** 2), v_lat, v_depth
 
 

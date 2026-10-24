@@ -258,6 +258,24 @@ def prox_two():
     expect(len(run.of("proximity")) == 1, f"{len(run.of('proximity'))} events")
 
 
+def prox_driver():
+    # Водитель: бокс 60x120 целиком внутри бокса грузовика 300x200
+    driver = Detection(cls="person", conf=0.9, bbox=(720.0, 360.0, 780.0, 480.0))
+    run = prox_run(3.0, lambda i: [driver, truck()])
+    expect(len(run.of("proximity")) == 0, f"{len(run.of('proximity'))} events")
+
+
+def prox_pedestrian():
+    # Водитель в кабине и пешеход снаружи на 0.5 роста: событие только у пешехода
+    driver = Detection(cls="person", conf=0.9, bbox=(720.0, 360.0, 780.0, 480.0))
+    run = prox_run(3.0, lambda i: [driver, person(500, 500), truck()])
+    events = run.of("proximity")
+    expect(len(events) == 1, f"{len(events)} events")
+    track = run.engine.tracks.get(events[0].track_id)
+    expect(track is not None and track.bbox[0] < 600, f"event on track {events[0].track_id} bbox "
+                                                      f"{track.bbox if track else None}")
+
+
 def run_rule(seconds: float, make, zones=None, zone=None) -> Run:
     return Run([RuleConfig(type="running", zone=zone)], zones).frames(seconds, make)
 
@@ -305,6 +323,12 @@ def run_depth():
     expect(len(run.of("running")) == 1, f"{len(run.of('running'))} events")
 
 
+def run_stand_up():
+    # Вставание: высота 120 -> 240 за 1 с при ширине 80, корпус вертикальный, затем стоит 2 с
+    run = run_rule(3.0, lambda i: [body(640, 600, 80, 120 + 12 * min(i, 10))])
+    expect(len(run.of("running")) == 0, f"{len(run.of('running'))} events")
+
+
 def run_depth_fall():
     # Стоит 1.5 с, за 1.2 с (12 кадров) плавно падает: высота 300 -> 100, ширина 100 -> 300,
     # корпус почти ложится (0.95 горизонтали, ~87 град), лежит 2 с.
@@ -328,8 +352,20 @@ def run_depth_fall():
     checked, ids = run()
     expect(len(ids) == 1, f"track ids during fall {sorted(ids)}")
     expect(len(checked.of("running")) == 0, f"{len(checked.of('running'))} events")
-    # Контроль: без проверки стойки то же падение даёт running, значит проверка стойки нагружена
+    # Без проверки стойки падение тоже не даёт running: высота и ширина бокса меняются в разные стороны
     control, _ = run({"upright_angle": 90.0, "upright_aspect": 0.0})
+    expect(len(control.of("running")) == 0, f"without upright check: {len(control.of('running'))} events")
+
+
+def run_depth_tilted():
+    # Бокс растёт пропорционально, как при беге к камере, но корпус наклонён (0.8 горизонтали):
+    # тревогу снимает только проверка стойки
+    def make(i):
+        return [body(640, 700, 60 + 6 * i, 150 + 15 * i, lying_t=0.8)]
+    checked = run_rule(3.0, make)
+    expect(len(checked.of("running")) == 0, f"{len(checked.of('running'))} events")
+    control = Run([RuleConfig(type="running", params={"upright_angle": 90.0, "upright_aspect": 0.0})]) \
+        .frames(3.0, make)
     expect(len(control.of("running")) >= 1, f"control without upright check: {len(control.of('running'))} events")
 
 
@@ -357,8 +393,12 @@ if __name__ == "__main__":
     check("run_walk", run_walk)
     check("run_jitter", run_jitter)
     check("run_zone", run_zone)
+    check("prox_driver", prox_driver)
+    check("prox_pedestrian", prox_pedestrian)
+    check("run_stand_up", run_stand_up)
     check("run_depth", run_depth)
     check("run_depth_fall", run_depth_fall)
+    check("run_depth_tilted", run_depth_tilted)
     check("registry4", registry4)
     check("demo_fall", demo_fall)
     check("demo_no_running", demo_no_running)
