@@ -123,6 +123,10 @@ def part_a() -> None:
         r = c.put("/api/cameras/cam1", json={**cam, "id": "cam2"})
         expect(r.status_code == 400, f"id mismatch {r.status_code}")
 
+    def put_cam2():
+        r = c.put("/api/cameras/cam2", json=camera(c, "cam2"))
+        expect(r.status_code == 200, f"code {r.status_code} {r.text[:200]}")
+
     def base_untouched():
         expect(BASE.read_bytes() == base_before, "configs/cameras.yaml changed")
 
@@ -130,6 +134,7 @@ def part_a() -> None:
     check("reload", reload)
     check("invalid", invalid)
     check("codes", codes)
+    check("put_cam2", put_cam2)
     check("base_untouched", base_untouched)
 
 
@@ -139,13 +144,9 @@ def part_b() -> None:
     os.environ["DB_PATH"] = str(TMP / "events.sqlite3")
     os.environ["CAMERAS_PATH"] = str(TMP / "cameras.b.yaml")
     with TestClient(create_app()) as c:
-        known = {r["type"] for r in c.get("/api/rules").json()}
 
         def cam2() -> dict:
-            # В configs/cameras.yaml у cam2 есть running, его нет в реестре до BE-9: PUT такого правила даёт 422
-            cam = camera(c, "cam2")
-            cam["rules"] = [r for r in cam["rules"] if r["type"] in known]
-            return cam
+            return camera(c, "cam2")
 
         def cam2_fps() -> float:
             return next(x for x in c.get("/api/status").json()["cameras"] if x["id"] == "cam2")["fps"]
