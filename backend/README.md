@@ -1,30 +1,85 @@
 # Backend
 
-Владелец: Максим. API описано в `CONTRACT.md`, раздел 6.
+Владелец: Максим Волков.
+
+| Раздел | Содержание |
+|---|---|
+| [Запуск](#запуск) | установка, веса, сборка фронтенда, запуск сервера |
+| [Переменные окружения](#переменные-окружения) | все переменные, которые читает код |
+| [API](#api) | ссылка на контракт, раздача фронтенда и снимков |
+| [Камеры](#камеры) | `cameras.yaml`, `cameras.local.yaml`, проверки `PUT` |
+| [Тестовые видео](#тестовые-видео) | камеры `test_*`, `run_offline.py`, `eval_offline.py` |
+| [Пайплайн](#пайплайн) | источники кадров, поток на камеру, детектор |
+| [События](#события) | база, снимки, WebSocket |
+| [Скрипты](#скрипты) и [Проверка](#проверка) | `run_offline.py`, `smoke.py`, `check_*.py` |
+| [Правила](#правила) | правила с параметрами, как добавить правило, [подбор порогов](#подбор-порогов) |
+| [Производительность](#производительность) | несколько камер на `onnx`, задержка до тревоги |
+| [Известные ограничения](#известные-ограничения) | что решение не умеет |
 
 ## Запуск
 
+Проверено клоном с нуля на macOS (BE-13). Нужны Python 3.10 и Node.js `^20.19.0` или `>=22.12.0`. Команды выполняются из корня репозитория.
+
 ```bash
-python -m backend
+cp .env.example .env
+python3.10 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
-Адрес по умолчанию: `http://127.0.0.1:8000`.
+Если `python3.10` нет, подойдёт любой интерпретатор 3.10: проверить `python3 --version`. Установка пакетов занимает около 5 минут.
+
+Веса детектора `onnx` (около 1 минуты, скачиваются с GitHub Ultralytics):
+
+```bash
+mkdir -p ml/weights
+cd ml/weights
+../../.venv/bin/python -c "from ultralytics import YOLO; YOLO('yolov8n-pose.pt').export(format='onnx', imgsz=640); YOLO('yolov8n.pt').export(format='onnx', imgsz=640)"
+cd ../..
+```
+
+Фронтенд:
+
+```bash
+npm --prefix frontend ci
+npm --prefix frontend run build
+```
+
+Сервер. Переменные из `.env` сервер сам не читает, их нужно выгрузить в окружение:
+
+```bash
+set -a; source .env; set +a
+.venv/bin/python -m backend
+```
+
+Адрес: `http://127.0.0.1:8000`, интерфейс оператора открывается там же. Камеры `cam1` и `cam2` читают `data/demo.mp4` по кругу, первое падение приходит в ленту примерно через 8 с.
+
+Без весов и детектора, на тестовых событиях: `PIPELINE=0 .venv/bin/python -m backend`. API отдаёт 40 тестовых событий за последние 7 суток из `backend/fixtures.py`, новая тестовая тревога приходит раз в `FIXTURE_WS_INTERVAL` секунд.
+
+## Переменные окружения
+
+Все переменные, которые читает код, есть в `.env.example`.
 
 | Переменная | По умолчанию | Значение |
 |---|---|---|
+| `DETECTOR_BACKEND` | `onnx` | бэкенд детектора: `onnx` или `linq` |
+| `PIPELINE` | `1` | `1`: реальные события, камеры обрабатываются детектором и правилами, события в базе `DB_PATH`; `0`: тестовые события в базе в памяти, тестовая тревога раз в `FIXTURE_WS_INTERVAL` с |
+| `FIXTURE_WS_INTERVAL` | `10` | интервал тестовой тревоги в `/ws/events` при `PIPELINE=0`, с |
+| `DB_PATH` | `backend/data/events.sqlite3` | база событий при `PIPELINE=1`, путь от корня репозитория |
+| `CAMERAS_PATH` | `configs/cameras.local.yaml` | файл с изменениями камер из интерфейса; если его нет, камеры берутся из `configs/cameras.yaml` |
+| `SOURCE_LOOP` | `1` | `0`: видеофайл и папка кадров не начинаются сначала после конца |
 | `BACKEND_HOST` | `127.0.0.1` | адрес сервера |
 | `BACKEND_PORT` | `8000` | порт сервера |
-| `FIXTURE_WS_INTERVAL` | `10` | интервал тестовой тревоги в `/ws/events` при `PIPELINE=0`, с |
-| `PIPELINE` | `1` | `1`: реальные события, камеры обрабатываются детектором и правилами, события в базе `DB_PATH`; `0`: тестовые события в базе в памяти, тестовая тревога раз в `FIXTURE_WS_INTERVAL` с |
-| `DB_PATH` | `backend/data/events.sqlite3` | база событий при `PIPELINE=1`, путь от корня репозитория |
 | `LOG_LEVEL` | `INFO` | уровень логов в консоли: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `DETECTOR_BACKEND` | `onnx` | бэкенд детектора: `onnx` или `linq` |
-| `SOURCE_LOOP` | `1` | `0`: видеофайл и папка кадров не начинаются сначала после конца |
-| `CAMERAS_PATH` | `configs/cameras.local.yaml` | файл с изменениями камер из интерфейса |
+| `LINQ_LOGIN`, `LINQ_AMQP_HOST`, `LINQ_AMQP_PORT`, `LINQ_AMQP_USER`, `LINQ_AMQP_PASSWORD` | нет | только для `DETECTOR_BACKEND=linq`, описание в `ml/README.md` |
 
-Камеры читаются из `CAMERAS_PATH`, если файл есть, иначе из `configs/cameras.yaml`. Подробнее в разделе «Камеры».
+## API
 
-Если есть `frontend/dist/index.html`, сборка фронтенда раздаётся по `/`. Снимки событий сохраняются в `backend/media/` и раздаются по `/media/...`.
+Пути, параметры и форматы JSON описаны в `CONTRACT.md`, раздел 6. Ошибки возвращаются HTTP-кодом и телом `{"detail": "текст"}`, ошибки валидации запроса — кодом 422.
+
+- `GET /api/events`: `limit` от 1 до 500 (по умолчанию 50), `offset` не меньше 0.
+- `PATCH /api/events/{id}`: `comment` не длиннее 1000 символов.
+- `PUT /api/cameras/{id}`: проверки в разделе «Камеры».
+- Если есть `frontend/dist/index.html`, сборка фронтенда раздаётся по `/`. Снимки событий сохраняются в `backend/media/` и раздаются по `/media/...`.
 
 ## Камеры
 
@@ -66,6 +121,11 @@ python scripts/check_cameras.py
 | `test_fall` | `fall.mov` | `fall` |
 | `test_running` | `running.mov` | `running` |
 | `test_danger_zone` | `danger_zone.mov` | `danger_zone`, зона `tape` по скотчу на полу |
+| `test_normal` | `normal_sit_stand.mov`, сцены без нарушений | `fall`, `running`, `proximity` |
+| `test_proximity` | `proximity.mp4` | `proximity`, `fall`, `running` |
+| `test_danger_zone_02` | `data/videos/test/danger_zone_02.mov`, контрольный набор | `danger_zone`, зона `tape` по кадру этого ракурса |
+
+`running_02.mov` идёт на камере `test_running`.
 
 `run_offline.py` ищет камеру в `configs/cameras.yaml`, а если её там нет, в `configs/cameras.test.yaml`:
 
@@ -356,6 +416,10 @@ python scripts/bench_cameras.py [--counts 1,2,4,6] [--fps 10] [--seconds 30] [--
 
 Результат пишется в stdout и в `backend/data/bench_cameras.json` (вне git). Если 6 камер держат заданную частоту, добавляется замер на 8 камерах.
 
-## Состояние
+## Известные ограничения
 
-- При `PIPELINE=0` API отдаёт тестовые события из `backend/fixtures.py`: 40 событий за последние 7 суток.
+- Бег прямо на камеру без калибровки камеры не отличается от шага вблизи: рост рамки при шаге рядом с камерой совпадает с бегом вдалеке. На контрольном наборе бег к камере (`running_04.mov`) не находится.
+- Бег со смазанным силуэтом не находится: детектор теряет человека в фазе бега (`running_03.mov`).
+- `proximity`: человек, стоящий у припаркованной техники, даёт тревогу, движение техники не учитывается. Зона тревоги — 2 роста человека от бокса техники.
+- Живые тревоги работают на `onnx`. LinQ представлен замерами (`reports/benchmarks.json`): через облачный сервис стенда кадр идёт 5–10 с.
+- API без авторизации, CORS открыт для любого источника (требование `CONTRACT.md`, раздел 6). Сервер по умолчанию слушает только `127.0.0.1`.
