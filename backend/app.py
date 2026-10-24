@@ -1,4 +1,4 @@
-"""API бэкенда по CONTRACT.md, раздел 6. До BE-6 работает на тестовых данных."""
+"""API бэкенда по CONTRACT.md, раздел 6. PIPELINE=1: реальные события из базы, PIPELINE=0: тестовые."""
 import asyncio
 import json
 import logging
@@ -17,20 +17,21 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from backend import snapshots
 from backend.cameras import load_cameras
+from backend.db import EventDB
 from backend.draw import draw
-from backend.fixtures import RULES, gray_frame, make_event, save_snapshot, seed_events
-from backend.hub import Hub, Store, to_json
+from backend.fixtures import gray_frame, make_event, save_snapshot, seed_events
+from backend.hub import STATUSES, Hub, Store, to_json
 from backend.pipeline import Pipeline
-from core.schemas import SEVERITIES, CameraConfig, RuleConfig, Zone
-from logic import describe
+from core.schemas import CameraConfig, Event, RuleConfig, Zone
 
 log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 MEDIA_DIR = ROOT / "backend" / "media"
 DIST_DIR = ROOT / "frontend" / "dist"
-STATUSES = ("new", "confirmed", "false", "forwarded")
+DEFAULT_DB_PATH = "backend/data/events.sqlite3"
 
 
 class ZoneIn(BaseModel):
@@ -92,48 +93,69 @@ def encode_jpeg(img: np.ndarray) -> bytes:
 
 
 def create_app() -> FastAPI:
-    store = Store(load_cameras(), seed_events())
+    use_pipeline = os.environ.get("PIPELINE", "1") == "1"
+    db = EventDB(os.environ.get("DB_PATH") or DEFAULT_DB_PATH) if use_pipeline else EventDB(":memory:")
+    store = Store(load_cameras(), db)
     hub = Hub()
     interval = float(os.environ.get("FIXTURE_WS_INTERVAL", "10"))
-    use_pipeline = os.environ.get("PIPELINE", "1") == "1"
     detector_backend = os.environ.get("DETECTOR_BACKEND") or "onnx"
-    state = {"detector": None, "pipeline": None}
+    state = {"detector": None, "pipeline": None, "loop": None}
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
-    def add_event(event):
+    def add_fixture_event(event: Event) -> dict:
         save_snapshot(event, MEDIA_DIR)
-        store.add_event(event)
+        return store.add_event(event, f"{event.camera_id}/{event.id}.jpg")
 
     async def fixture_loop():
         while True:
             await asyncio.sleep(interval)
-            event = make_event(time.time())
-            add_event(event)
-            await hub.broadcast("event_new", store.event_view(event))
+            view = add_fixture_event(make_event(time.time()))
+            await hub.broadcast("event_new", view)
+
+    def send(kind: str, view: dict) -> None:
+        # on_result вызывается из потока детектора, рассылка идёт в цикле событий сервера
+        loop = state["loop"]
+        if loop is not None and view is not None:
+            asyncio.run_coroutine_threadsafe(hub.broadcast(kind, view), loop)
 
     def on_result(camera_id, ts, frame, result):
-        # До BE-6 события движка только пишутся в лог, в Store и WebSocket идут тестовые.
-        for e in result.new_events:
-            log.info("event new: camera %s type %s track %s ts_confirm %.2f", camera_id, e.type, e.track_id,
-                     e.ts_confirm)
-        for e in result.closed_events:
-            log.info("event closed: camera %s type %s track %s ts_end %.2f", camera_id, e.type, e.track_id,
-                     e.ts_end)
+        for event in result.new_events:
+            try:
+                rel = snapshots.save_snapshot(frame, event, camera_id)
+                send("event_new", store.add_event(event, rel))
+                log.info("event new: camera %s type %s track %s ts_confirm %.2f", camera_id, event.type,
+                         event.track_id, event.ts_confirm)
+            except Exception:
+                log.exception("камера %s: событие %s не сохранено", camera_id, event.id)
+        for event in result.closed_events:
+            try:
+                send("event_update", store.close_event(event.id, event.ts_end))
+                log.info("event closed: camera %s type %s track %s ts_end %.2f", camera_id, event.type,
+                         event.track_id, event.ts_end)
+            except Exception:
+                log.exception("камера %s: событие %s не закрыто", camera_id, event.id)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        for event in store.events.values():
-            save_snapshot(event, MEDIA_DIR)
+        state["loop"] = asyncio.get_running_loop()
+        task = None
         if use_pipeline:
+            closed = db.close_open(time.time())
+            log.info("закрыто открытых событий при старте: %d", closed)
             from ml import create_detector
             state["detector"] = create_detector()
             state["pipeline"] = Pipeline(list(store.cameras.values()), state["detector"], on_result)
             state["pipeline"].start()
-        task = asyncio.create_task(fixture_loop())
+        else:
+            for event in seed_events():
+                add_fixture_event(event)
+            task = asyncio.create_task(fixture_loop())
         yield
-        task.cancel()
+        if task is not None:
+            task.cancel()
         if state["pipeline"] is not None:
             state["pipeline"].stop()
+        state["loop"] = None
 
     app = FastAPI(lifespan=lifespan)
     app.state.store = store
@@ -151,13 +173,6 @@ def create_app() -> FastAPI:
         if camera is None:
             raise HTTPException(404, f"camera {camera_id} not found")
         return camera
-
-    def filter_by_ts(events, ts_from, ts_to):
-        if ts_from is not None:
-            events = [e for e in events if e.ts_confirm >= ts_from]
-        if ts_to is not None:
-            events = [e for e in events if e.ts_confirm <= ts_to]
-        return events
 
     @app.get("/api/status")
     def status():
@@ -237,7 +252,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/rules")
     def rules():
-        return describe() or RULES
+        return store.rule_specs()
 
     @app.get("/api/events")
     def events(
@@ -251,31 +266,18 @@ def create_app() -> FastAPI:
         limit: int = 50,
         offset: int = 0,
     ):
-        items = filter_by_ts(list(store.events.values()), ts_from, ts_to)
-        if type is not None:
-            items = [e for e in items if e.type == type]
-        if camera_id is not None:
-            items = [e for e in items if e.camera_id == camera_id]
-        if zone_id is not None:
-            items = [e for e in items if e.zone_id == zone_id]
-        if status is not None:
-            items = [e for e in items if store.status.get(e.id, "new") == status]
-        if severity is not None:
-            items = [e for e in items if e.severity == severity]
-        items.sort(key=lambda e: e.ts_confirm, reverse=True)
-        page = items[offset:offset + limit]
-        return {"items": [store.event_view(e) for e in page], "total": len(items)}
+        items, total = store.list_events(type=type, camera_id=camera_id, zone_id=zone_id, status=status,
+                                         severity=severity, ts_from=ts_from, ts_to=ts_to,
+                                         limit=limit, offset=offset)
+        return {"items": items, "total": total}
 
     @app.patch("/api/events/{event_id}")
     async def patch_event(event_id: str, body: EventPatch):
         if body.status not in STATUSES:
             raise HTTPException(400, f"unknown status {body.status}")
-        event = store.events.get(event_id)
-        if event is None:
+        view = store.set_status(event_id, body.status, body.comment)
+        if view is None:
             raise HTTPException(404, f"event {event_id} not found")
-        store.status[event_id] = body.status
-        store.comment[event_id] = body.comment
-        view = store.event_view(event)
         await hub.broadcast("event_update", view)
         return view
 
@@ -284,28 +286,7 @@ def create_app() -> FastAPI:
         ts_from: float | None = Query(None, alias="from"),
         ts_to: float | None = Query(None, alias="to"),
     ):
-        items = filter_by_ts(list(store.events.values()), ts_from, ts_to)
-        result = {
-            "total": len(items),
-            "by_type": {r["type"]: 0 for r in RULES},
-            "by_camera": {c: 0 for c in store.cameras},
-            "by_severity": {s: 0 for s in SEVERITIES},
-            "by_status": {s: 0 for s in STATUSES},
-            "by_hour": [0] * 24,
-            "by_day": {},
-        }
-        for e in items:
-            dt = datetime.fromtimestamp(e.ts_confirm)
-            day = dt.strftime("%Y-%m-%d")
-            st = store.status.get(e.id, "new")
-            result["by_type"][e.type] = result["by_type"].get(e.type, 0) + 1
-            result["by_camera"][e.camera_id] = result["by_camera"].get(e.camera_id, 0) + 1
-            result["by_severity"][e.severity] = result["by_severity"].get(e.severity, 0) + 1
-            result["by_status"][st] = result["by_status"].get(st, 0) + 1
-            result["by_hour"][dt.hour] += 1
-            result["by_day"][day] = result["by_day"].get(day, 0) + 1
-        result["by_day"] = dict(sorted(result["by_day"].items()))
-        return result
+        return store.stats(ts_from, ts_to)
 
     @app.get("/api/benchmarks")
     def benchmarks():

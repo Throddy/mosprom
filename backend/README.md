@@ -14,8 +14,9 @@ python -m backend
 |---|---|---|
 | `BACKEND_HOST` | `127.0.0.1` | адрес сервера |
 | `BACKEND_PORT` | `8000` | порт сервера |
-| `FIXTURE_WS_INTERVAL` | `10` | интервал тестовой тревоги в `/ws/events`, с |
-| `PIPELINE` | `1` | `1`: камеры обрабатываются детектором, `/frame`, `/stream`, `/api/status` по реальным данным; `0`: всё на тестовых данных |
+| `FIXTURE_WS_INTERVAL` | `10` | интервал тестовой тревоги в `/ws/events` при `PIPELINE=0`, с |
+| `PIPELINE` | `1` | `1`: реальные события, камеры обрабатываются детектором и правилами, события в базе `DB_PATH`; `0`: тестовые события в базе в памяти, тестовая тревога раз в `FIXTURE_WS_INTERVAL` с |
+| `DB_PATH` | `backend/data/events.sqlite3` | база событий при `PIPELINE=1`, путь от корня репозитория |
 | `DETECTOR_BACKEND` | `onnx` | бэкенд детектора: `onnx` или `linq` |
 | `SOURCE_LOOP` | `1` | `0`: видеофайл и папка кадров не начинаются сначала после конца |
 
@@ -41,6 +42,17 @@ python -m backend
 
 ```bash
 python scripts/check_pipeline.py
+```
+
+## События
+
+- События движка правил сохраняются в SQLite (`DB_PATH`, папка `backend/data/` в git не попадает).
+- Снимок события: кадр, на котором сработало правило, нарушитель выделен красным. Файл `backend/media/<camera_id>/<id>.jpg`, адрес `/media/<camera_id>/<id>.jpg`.
+- Новое событие уходит в `/ws/events` как `event_new`, закрытие и смена статуса как `event_update`.
+- При старте с `PIPELINE=1` события, открытые на момент прошлой остановки, закрываются: `ts_end = ts_confirm`.
+
+```bash
+python scripts/check_events.py
 ```
 
 ## Проверка
@@ -87,5 +99,5 @@ python scripts/check_rules.py
 
 ## Состояние
 
-- До BE-6 API отдаёт тестовые данные из `backend/fixtures.py`: 2 камеры, 4 правила, 40 событий за последние 7 суток.
+- При `PIPELINE=0` API отдаёт тестовые события из `backend/fixtures.py`: 40 событий за последние 7 суток.
 - До BE-8 `PUT /api/cameras/{id}` сохраняет камеру только в памяти, после перезапуска изменения теряются.
