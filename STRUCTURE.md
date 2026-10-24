@@ -73,6 +73,7 @@ node_modules/
 frontend/dist/
 ml/weights/
 backend/media/
+backend/data/
 data/videos/
 *.pt
 *.onnx
