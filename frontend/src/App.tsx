@@ -1,98 +1,91 @@
-import { useEffect, useState } from 'react'
+import { AlertFeed } from './alerts/AlertFeed.tsx'
+import { useServerStatus, type ServerStatus } from './api/useServerStatus.ts'
 
-// Status из CONTRACT.md, раздел 6
-interface Status {
-  detector: string
-  backend: string
-  cameras: { id: string; online: boolean; fps: number; latency_ms: number }[]
+// Значения Status.backend из CONTRACT.md, раздел 4
+const DETECTOR_BACKENDS: Record<string, string> = {
+  onnx: 'ONNX Runtime, CPU',
+  linq: 'LinQ TPU',
 }
 
-type Backend =
-  | { state: 'loading' }
-  | { state: 'online'; status: Status }
-  | { state: 'offline'; error: string }
-
-const SECTIONS = [
-  { title: 'Лента тревог', task: 'FE-3' },
-  { title: 'Журнал событий', task: 'FE-4' },
-  { title: 'Камеры и зоны', task: 'FE-5' },
-  { title: 'Дашборд и замеры LinQ', task: 'FE-6' },
-]
-
 export default function App() {
-  const [backend, setBackend] = useState<Backend>({ state: 'loading' })
-
-  useEffect(() => {
-    const controller = new AbortController()
-    fetch('/api/status', { signal: controller.signal })
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return res.json() as Promise<Status>
-      })
-      .then((status) => setBackend({ state: 'online', status }))
-      .catch((err: unknown) => {
-        if (controller.signal.aborted) return
-        setBackend({ state: 'offline', error: err instanceof Error ? err.message : String(err) })
-      })
-    return () => controller.abort()
-  }, [])
+  const server = useServerStatus()
 
   return (
     <div className="app">
       <header className="header">
-        <h1>Мониторинг нарушений ТБ</h1>
-        <p className="subtitle">Видеоаналитика на LinQ TPU</p>
+        <div className="brand">
+          <h1>Мониторинг нарушений ТБ</h1>
+          <p className="subtitle">Видеоаналитика на LinQ TPU</p>
+        </div>
+        <ServerInfo server={server} />
       </header>
 
-      <main className="content">
-        <section className="card">
-          <h2>Сервер</h2>
-          <BackendInfo backend={backend} />
-        </section>
-
-        <section className="card">
-          <h2>Разделы</h2>
-          <ul className="sections">
-            {SECTIONS.map((s) => (
-              <li key={s.task}>
-                <span>{s.title}</span>
-                <span className="muted">{s.task}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
+      <main>
+        <AlertFeed />
       </main>
     </div>
   )
 }
 
-function BackendInfo({ backend }: { backend: Backend }) {
-  if (backend.state === 'loading') {
-    return <p className="muted">Проверка подключения…</p>
+function ServerInfo({ server }: { server: ServerStatus }) {
+  if (server.state === 'loading') {
+    return <p className="server muted">Проверка подключения…</p>
   }
-  if (backend.state === 'offline') {
+  if (server.state === 'offline') {
     return (
-      <p>
-        <span className="dot dot-off" /> Нет связи с <code>/api/status</code>: {backend.error}
-      </p>
+      <div className="server">
+        <p>
+          <span className="dot dot-off" /> Нет связи с <code>/api/status</code>: {server.error}
+        </p>
+        {server.last && (
+          <p className="muted">
+            Последний известный детектор:{' '}
+            <DetectorSource detector={server.last.detector} backend={server.last.backend} />
+          </p>
+        )}
+      </div>
     )
   }
-  const { status } = backend
+  const { status } = server
   const online = status.cameras.filter((c) => c.online).length
   return (
-    <dl className="facts">
-      <dt>Подключение</dt>
+    <dl className="server facts">
+      <dt>Сервер</dt>
       <dd>
-        <span className="dot dot-on" /> есть
+        <span className="dot dot-on" /> есть связь
       </dd>
       <dt>Детектор</dt>
-      <dd>{status.detector}</dd>
-      <dt>Бэкенд детектора</dt>
-      <dd>{status.backend}</dd>
+      <dd>
+        <DetectorSource detector={status.detector} backend={status.backend} />
+      </dd>
       <dt>Камеры онлайн</dt>
       <dd>
         {online} из {status.cameras.length}
       </dd>
     </dl>
+  )
+}
+
+// Источник берётся только из /api/status и описывает текущий детектор сервера
+function DetectorSource({ detector, backend }: { detector: string; backend: string }) {
+  const label = DETECTOR_BACKENDS[backend]
+  if (label) {
+    return (
+      <>
+        {detector} <span className="muted">· {label}</span>
+      </>
+    )
+  }
+  if (backend === 'fixtures') {
+    return (
+      <span className="source-test" title="GET /api/status: backend = fixtures">
+        тестовые данные сервера, не результат нейросети
+      </span>
+    )
+  }
+  return (
+    <>
+      {detector} <span className="muted">· backend «{backend}»</span>
+    </>
   )
 }

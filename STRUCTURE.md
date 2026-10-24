@@ -73,6 +73,8 @@ node_modules/
 frontend/dist/
 ml/weights/
 backend/media/
+backend/data/
+configs/cameras.local.yaml
 data/videos/
 *.pt
 *.onnx
