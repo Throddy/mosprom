@@ -1,4 +1,8 @@
-"""Пайплайн: поток на камеру и общий поток детектора, который берёт последний кадр каждой камеры.
+"""Пайплайн: поток на камеру и DETECTOR_WORKERS потоков-обработчиков, каждый со своим детектором.
+
+Камеры распределяются по обработчикам при старте по кругу в порядке конфига. Камера всегда обрабатывается
+одним и тем же обработчиком: её Engine вызывается только из него, кадры идут строго по порядку.
+Обработчик берёт последние кадры своих камер и вызывает infer одним списком.
 
 Камера читает кадры с частотой показа max(fps камеры, STREAM_FPS): последний кадр идёт в /stream.
 Детектор получает кадр камеры не чаще fps камеры; правила и ts событий считаются только по этим кадрам.
@@ -22,6 +26,10 @@ LATENCY_WINDOW = 10
 
 def stream_fps() -> float:
     return float(os.environ.get("STREAM_FPS", "15"))
+
+
+def detector_workers() -> int:
+    return max(1, int(os.environ.get("DETECTOR_WORKERS", "1")))
 
 
 class _Camera:
@@ -56,21 +64,35 @@ class Pipeline:
         self.on_result = on_result
         self.cams = {c.id: _Camera(c) for c in cameras}
         self.stopped = threading.Event()
-        self.detector_thread: threading.Thread | None = None
+        self.detector_threads: list[threading.Thread] = []
 
     def start(self) -> None:
         self.stopped.clear()
         for cam in self.cams.values():
             self._start_camera(cam)
-        self.detector_thread = threading.Thread(target=self._detector_loop, name="detector", daemon=True)
-        self.detector_thread.start()
+        # Обработчиков не больше, чем камер; камеры по кругу в порядке конфига
+        n = max(1, min(detector_workers(), len(self.cams)))
+        groups: list[list[_Camera]] = [[] for _ in range(n)]
+        for i, cam in enumerate(self.cams.values()):
+            groups[i % n].append(cam)
+        self.detector_threads = [
+            threading.Thread(target=self._detector_loop, args=(group, i == 0), name=f"detector-{i}", daemon=True)
+            for i, group in enumerate(groups)]
+        for t in self.detector_threads:
+            t.start()
+
+    @property
+    def detector_thread(self) -> threading.Thread | None:
+        # Для проверок: живой обработчик, если есть, иначе первый
+        alive = [t for t in self.detector_threads if t.is_alive()]
+        return (alive or self.detector_threads or [None])[0]
 
     def stop(self) -> None:
         self.stopped.set()
         for cam in self.cams.values():
             cam.interrupt()
         deadline = time.monotonic() + 3.0
-        threads = [c.thread for c in self.cams.values()] + [self.detector_thread]
+        threads = [c.thread for c in self.cams.values()] + self.detector_threads
         for t in threads:
             if t is not None:
                 t.join(timeout=max(0.0, deadline - time.monotonic()))
@@ -113,10 +135,20 @@ class Pipeline:
                 cam.online = False
             self.stopped.wait(REOPEN_DELAY)
 
-    def _detector_loop(self) -> None:
+    def _detector_loop(self, cams: list[_Camera], first: bool) -> None:
+        detector = self.detector
+        if not first:
+            # Детектор может быть непотокобезопасным (CONTRACT.md, раздел 4): у обработчика свой экземпляр,
+            # созданный в его потоке
+            try:
+                from ml import create_detector
+                detector = create_detector(os.environ.get("DETECTOR_BACKEND", "onnx"))
+            except Exception:
+                log.exception("обработчик %s: детектор не создан", threading.current_thread().name)
+                return
         while not self.stopped.is_set():
             batch = []
-            for cam in self.cams.values():
+            for cam in cams:
                 with cam.lock:
                     item, cam.slot = cam.slot, None
                 if item is not None:
@@ -125,7 +157,7 @@ class Pipeline:
                 self.stopped.wait(0.005)
                 continue
             try:
-                results = self.detector.infer([frame for _, _, frame in batch])
+                results = detector.infer([frame for _, _, frame in batch])
             except Exception:
                 log.exception("ошибка детектора")
                 self.stopped.wait(1.0)
@@ -176,10 +208,8 @@ class Pipeline:
     def update_camera(self, cfg: CameraConfig) -> None:
         cam = self.cams.get(cfg.id)
         if cam is None:
-            cam = _Camera(cfg)
-            self.cams[cfg.id] = cam
-            if self.detector_thread is not None and not self.stopped.is_set():
-                self._start_camera(cam)
+            # Камеры закреплены за обработчиками при старте; API меняет только существующие камеры
+            log.warning("камера %s: нет в пайплайне, изменения не применены", cfg.id)
             return
         old = cam.cfg
         cam.cfg = cfg

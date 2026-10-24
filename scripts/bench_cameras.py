@@ -1,6 +1,8 @@
 """Замер нескольких камер на onnx: FPS, задержка обработки, задержка до event_new, загрузка CPU.
 
-python scripts/bench_cameras.py [--counts 1,2,4,6] [--fps 10] [--seconds 30] [--source data/demo.mp4]
+python scripts/bench_cameras.py [--counts 1,2,4,6] [--fps 10] [--seconds 30] [--source data/demo.mp4] [--workers 1,2,3,4]
+
+--workers: число обработчиков DETECTOR_WORKERS, для каждого — тот же замер по --counts.
 """
 import argparse
 import json
@@ -62,11 +64,12 @@ class Collector:
                 self.alarms[camera_id].append((now - ts) * 1000.0)
 
 
-def bench(n: int, fps: float, seconds: float, source: str, detector) -> dict:
+def bench(n: int, fps: float, seconds: float, source: str, detector, workers: int = 1) -> dict:
     cameras = [CameraConfig(id=f"bench{i}", name=f"bench{i}", source=source, fps=fps,
                             rules=[RuleConfig(type="fall"), RuleConfig(type="running")])
                for i in range(1, n + 1)]
     collector = Collector()
+    os.environ["DETECTOR_WORKERS"] = str(workers)
     pipeline = Pipeline(cameras, detector, collector)
     pipeline.start()
     time.sleep(WARMUP)
@@ -94,7 +97,7 @@ def bench(n: int, fps: float, seconds: float, source: str, detector) -> dict:
     all_lat = [x for lat in collector.frames.values() for x in lat]
     all_alarms = [x for a in collector.alarms.values() for x in a]
     return {
-        "cameras": n, "target_fps": fps, "seconds": round(elapsed, 1),
+        "workers": workers, "cameras": n, "target_fps": fps, "seconds": round(elapsed, 1),
         "total_fps": round(total_fps, 2), "fps_per_camera": round(total_fps / n, 2),
         "latency_ms_p50": pct(all_lat, 50), "latency_ms_p95": pct(all_lat, 95),
         "events": len(all_alarms),
@@ -105,12 +108,12 @@ def bench(n: int, fps: float, seconds: float, source: str, detector) -> dict:
 
 
 def print_table(rows: list[dict]) -> None:
-    head = ("N", "FPS всего", "FPS/камера", "lat p50", "lat p95", "событий", "to_ws p50", "to_ws p95",
+    head = ("workers", "N", "FPS всего", "FPS/камера", "lat p50", "lat p95", "событий", "to_ws p50", "to_ws p95",
             "load 1m", "CPU с/с")
     print(" | ".join(head))
     for r in rows:
         print(" | ".join(str(v) for v in (
-            r["cameras"], r["total_fps"], r["fps_per_camera"], r["latency_ms_p50"], r["latency_ms_p95"],
+            r["workers"], r["cameras"], r["total_fps"], r["fps_per_camera"], r["latency_ms_p50"], r["latency_ms_p95"],
             r["events"], r["frame_to_ws_ms_p50"], r["frame_to_ws_ms_p95"], r["loadavg_1m"], r["cpu_s_per_s"])))
 
 
@@ -120,31 +123,40 @@ def main() -> int:
     parser.add_argument("--fps", type=float, default=10.0)
     parser.add_argument("--seconds", type=float, default=30.0)
     parser.add_argument("--source", default="data/demo.mp4")
+    parser.add_argument("--workers", default="1")
     args = parser.parse_args()
     counts = [int(x) for x in args.counts.split(",") if x.strip()]
+    workers_list = [int(x) for x in args.workers.split(",") if x.strip()]
 
     from ml import create_detector
     detector = create_detector("onnx")
     rows = []
-    queue = list(counts)
-    while queue:
-        n = queue.pop(0)
-        row = bench(n, args.fps, args.seconds, args.source, detector)
-        rows.append(row)
-        print(f"N={n}: FPS/камера {row['fps_per_camera']}, lat p95 {row['latency_ms_p95']} мс", flush=True)
-        if n == 6:
-            if row["fps_per_camera"] < 3:
-                queue = [c for c in queue if c <= 6]
-            elif row["fps_per_camera"] >= 0.9 * args.fps and 8 not in counts:
-                queue.append(8)
+    for workers in workers_list:
+        queue = list(counts)
+        while queue:
+            n = queue.pop(0)
+            row = bench(n, args.fps, args.seconds, args.source, detector, workers)
+            rows.append(row)
+            print(f"workers={workers} N={n}: FPS/камера {row['fps_per_camera']}, "
+                  f"lat p95 {row['latency_ms_p95']} мс", flush=True)
+            if n == 6:
+                if row["fps_per_camera"] < 3:
+                    queue = [c for c in queue if c <= 6]
+                elif row["fps_per_camera"] >= 0.9 * args.fps and 8 not in counts:
+                    queue.append(8)
 
     print()
     print(f"{platform.platform()}, процессор {platform.processor() or platform.machine()}, "
           f"цель {args.fps:g} кадров/с на камеру, {args.seconds:g} с сбора после {WARMUP:g} с прогрева")
     print_table(rows)
-    ok = [r["cameras"] for r in rows if r["fps_per_camera"] >= 0.9 * args.fps]
+    six = [r for r in rows if r["cameras"] == 6]
+    best = max(six, key=lambda r: r["total_fps"])["workers"] if six else workers_list[0]
+    ok = [r["cameras"] for r in rows if r["workers"] == best and r["fps_per_camera"] >= 0.9 * args.fps]
     verdict = max(ok) if ok else 0
-    print(f"Вывод: при {args.fps:g} кадрах/с на камеру машина тянет {verdict} камер "
+    if six:
+        print(f"Вывод: наибольший суммарный FPS при 6 камерах и {args.fps:g} кадрах/с — "
+              f"при {best} обработчиках")
+    print(f"Вывод: при {best} обработчиках и {args.fps:g} кадрах/с на камеру машина тянет {verdict} камер "
           f"(FPS на камеру не ниже 90 % заданного)")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -154,7 +166,7 @@ def main() -> int:
         data = {}
     data[f"fps_{args.fps:g}"] = {
         "platform": platform.platform(), "processor": platform.processor() or platform.machine(),
-        "max_cameras": verdict, "rows": rows,
+        "best_workers": best, "max_cameras": verdict, "rows": rows,
     }
     OUT.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0
