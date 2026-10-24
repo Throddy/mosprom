@@ -47,21 +47,32 @@ def postprocess_pose(output: np.ndarray, meta: Meta, frame_size: tuple[int, int]
 
 
 def postprocess_det(output: np.ndarray, meta: Meta, frame_size: tuple[int, int], conf: float,
-                    iou: float, class_names: dict[int, str], keep: set[str]) -> list[Detection]:
+                    iou: float, classes: dict[int, str],
+                    class_conf: dict[str, float]) -> list[Detection]:
     """Выход [1, 84, 8400]: cx, cy, w, h в пикселях входа 640 и 80 оценок классов COCO.
 
-    frame_size — (width, height) исходного кадра.
+    frame_size — (width, height) исходного кадра; classes — индекс COCO → имя класса.
     """
     pred = output[0]
     class_ids, scores = pred[4:].argmax(0), pred[4:].max(0)
-    keep_ids = [i for i, name in class_names.items() if name in keep]
-    mask = (scores > conf) & np.isin(class_ids, keep_ids)
+    min_conf = lowest_conf(conf, class_conf)
+    mask = (scores > min_conf) & np.isin(class_ids, list(classes))
     boxes, scores, class_ids = pred[:4, mask].T, scores[mask], class_ids[mask]
-    return [
-        Detection(cls=class_names[int(class_ids[i])], conf=float(scores[i]),
+    detections = [
+        Detection(cls=classes[int(class_ids[i])], conf=float(scores[i]),
                   bbox=_to_frame_box(boxes[i], meta, frame_size))
-        for i in _nms(boxes, scores, class_ids, conf, iou)
+        for i in _nms(boxes, scores, class_ids, min_conf, iou)
     ]
+    return keep_by_class_conf(detections, conf, class_conf)
+
+
+def lowest_conf(conf: float, class_conf: dict[str, float]) -> float:
+    return min([conf, *class_conf.values()])
+
+
+def keep_by_class_conf(detections: list[Detection], conf: float,
+                       class_conf: dict[str, float]) -> list[Detection]:
+    return [d for d in detections if d.conf >= class_conf.get(d.cls, conf)]
 
 
 def _nms(boxes: np.ndarray, scores: np.ndarray, class_ids: np.ndarray | None, conf: float,

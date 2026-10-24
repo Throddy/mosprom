@@ -1,4 +1,3 @@
-import ast
 import json
 import os
 import time
@@ -35,10 +34,9 @@ class LinqDetector:
         self._det_uri = f"file://{program_dir}/{linq_cfg['det_program']}?raw=False"
         self._pose_tail = ort.InferenceSession(str(_tail_path(root / pose_cfg["weights"])))
         self._det_tail = ort.InferenceSession(str(_tail_path(root / det_cfg["weights"])))
-        det_meta = ort.InferenceSession(str(root / det_cfg["weights"])).get_modelmeta()
-        self._class_names = ast.literal_eval(det_meta.custom_metadata_map["names"])
         self._pose_conf, self._det_conf = pose_cfg["conf"], det_cfg["conf"]
-        self._det_keep = set(det_cfg["classes"])
+        self._det_classes = det_cfg["classes"]
+        self._class_conf = det_cfg.get("class_conf", {})
         self._params = pika.ConnectionParameters(
             host=_env("LINQ_AMQP_HOST"), port=int(_env("LINQ_AMQP_PORT")),
             credentials=pika.PlainCredentials(_env("LINQ_AMQP_USER"), _env("LINQ_AMQP_PASSWORD")))
@@ -72,7 +70,7 @@ class LinqDetector:
         det = _run_tail(self._det_tail, det_out)
         return (postprocess_pose(pose, meta, frame_size, self._pose_conf, IOU)
                 + postprocess_det(det, meta, frame_size, self._det_conf, IOU,
-                                  self._class_names, self._det_keep))
+                                  self._det_classes, self._class_conf))
 
     def _call(self, tasks: list[Task]) -> list[dict[str, np.ndarray]]:
         try:
