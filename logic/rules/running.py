@@ -25,7 +25,8 @@ def is_upright(record, upright_angle: float, upright_aspect: float) -> bool:
     Без точек: высота бокса к ширине больше upright_aspect.
     """
     _, bbox, kpts = record
-    if kpts is not None:
+    # Точки неверной формы считаются отсутствующими: решает признак по боксу, а не исключение
+    if isinstance(kpts, np.ndarray) and kpts.shape == (17, 3):
         shoulders, hips = _mid(kpts, SHOULDERS), _mid(kpts, HIPS)
         if shoulders is not None and hips is not None:
             dx, dy = hips - shoulders

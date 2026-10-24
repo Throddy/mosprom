@@ -306,14 +306,31 @@ def run_depth():
 
 
 def run_depth_fall():
-    # Стоит 1.5 с, за 0.5 с падает: высота 300 -> 100, ширина 100 -> 300, корпус ложится, лежит 2 с
+    # Стоит 1.5 с, за 1.2 с (12 кадров) плавно падает: высота 300 -> 100, ширина 100 -> 300,
+    # корпус почти ложится (0.95 горизонтали, ~87 град), лежит 2 с.
     def make(i):
         if i < 15:
             return [body(640, 600, 100, 300)]
-        p = min((i - 15) / 5, 1.0)
-        return [body(640, 600, 100 + 200 * p, 300 - 200 * p, lying_t=p)]
-    run = run_rule(4.0, make)
-    expect(len(run.of("running")) == 0, f"{len(run.of('running'))} events")
+        p = min((i - 15) / 12, 1.0)
+        return [body(640, 600, 100 + 200 * p, 300 - 200 * p, lying_t=0.95 * p)]
+
+    def run(params=None):
+        r = Run([RuleConfig(type="running", params=params or {})])
+        ids = set()
+        for i in range(round(4.7 / DT)):
+            result = r.engine.process(r.ts, W, H, make(i))
+            r.events += result.new_events
+            if 15 <= i <= 27:
+                ids.update(t.track_id for t in result.tracks)
+            r.ts = round(r.ts + DT, 6)
+        return r, ids
+
+    checked, ids = run()
+    expect(len(ids) == 1, f"track ids during fall {sorted(ids)}")
+    expect(len(checked.of("running")) == 0, f"{len(checked.of('running'))} events")
+    # Контроль: без проверки стойки то же падение даёт running, значит проверка стойки нагружена
+    control, _ = run({"upright_angle": 90.0, "upright_aspect": 0.0})
+    expect(len(control.of("running")) >= 1, f"control without upright check: {len(control.of('running'))} events")
 
 
 def registry4():
