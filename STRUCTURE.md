@@ -20,6 +20,7 @@
 │
 ├── configs/
 │   ├── cameras.yaml         Максим    камеры, зоны, правила
+│   ├── cameras.demo.yaml    Максим    камеры демо-стенда: ролик, зона, трансляции
 │   └── models.yaml          Аня       модели, пороги, размер входа
 │
 ├── ml/                      Аня
@@ -45,6 +46,8 @@
 ├── scripts/                 Максим
 │   ├── run_offline.py
 │   └── smoke.py
+│
+├── deploy/                  Максим    развёртывание демо-стенда: install.sh, upload.sh, systemd, Caddy
 │
 ├── notebooks/               Аня       работа на сервере LinQ
 │

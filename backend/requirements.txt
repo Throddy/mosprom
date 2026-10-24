@@ -5,3 +5,4 @@ uvicorn[standard]
 opencv-python
 httpx
 supervision==0.26.1
+yt-dlp
