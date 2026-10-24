@@ -48,6 +48,7 @@ class Engine:
         self.candidates: dict[tuple, dict] = {}   # key -> {"ts_start", "last_seen"}
         self.open: dict[tuple, dict] = {}         # key -> {"event", "last_seen"}
         self.warned: set[tuple] = set()
+        self.broken: set[tuple] = set()
 
     def update_config(self, camera: CameraConfig) -> None:
         with self.lock:
@@ -89,6 +90,38 @@ class Engine:
             return False
         return True
 
+    def _apply_rule(self, cfg: RuleConfig, ctx: FrameContext, ts: float, result: Result) -> bool:
+        """Проверяет одно правило и обновляет его состояния. False, если правило неактивно."""
+        if not self._rule_active(cfg, ts):
+            return False
+        rule = RULES[cfg.type]
+        min_duration = float(rule.param(cfg, "min_duration"))
+        try:
+            violators = rule.check(ctx, cfg) or {}
+        except Exception:
+            log.exception("камера %s: ошибка правила %s", self.camera.id, cfg.type)
+            violators = {}
+        for track_id, extra in violators.items():
+            if track_id not in ctx.tracks:
+                continue
+            key = (cfg.type, cfg.zone, track_id)
+            if key in self.open:
+                self.open[key]["last_seen"] = ts
+                continue
+            cand = self.candidates.setdefault(key, {"ts_start": ts, "last_seen": ts})
+            cand["last_seen"] = ts
+            if cand["last_seen"] - cand["ts_start"] >= min_duration:
+                track = ctx.tracks[track_id]
+                event = Event(
+                    id=uuid.uuid4().hex, camera_id=self.camera.id, type=cfg.type,
+                    severity=rule.severity, track_id=track_id, bbox=track.bbox, conf=track.conf,
+                    ts_start=cand["ts_start"], ts_confirm=ts, zone_id=cfg.zone, extra=dict(extra or {}),
+                )
+                del self.candidates[key]
+                self.open[key] = {"event": event, "last_seen": ts}
+                result.new_events.append(event)
+        return True
+
     def _process(self, ts: float, width: int, height: int, detections: list[Detection]) -> Result:
         result = Result()
         seen = self._update_tracks(ts, detections)
@@ -100,35 +133,16 @@ class Engine:
 
         active_keys = set()
         for cfg in self.camera.rules:
-            if not self._rule_active(cfg, ts):
-                continue
-            active_keys.add((cfg.type, cfg.zone))
-            rule = RULES[cfg.type]
+            # Ошибка одного правила (битое расписание, нечисловой параметр) не останавливает камеру:
+            # правило пропускается, его открытые события закрываются как у выключенного.
             try:
-                violators = rule.check(ctx, cfg) or {}
-            except Exception:
-                log.exception("камера %s: ошибка правила %s", self.camera.id, cfg.type)
-                violators = {}
-            min_duration = float(rule.param(cfg, "min_duration"))
-            for track_id, extra in violators.items():
-                if track_id not in ctx.tracks:
-                    continue
-                key = (cfg.type, cfg.zone, track_id)
-                if key in self.open:
-                    self.open[key]["last_seen"] = ts
-                    continue
-                cand = self.candidates.setdefault(key, {"ts_start": ts, "last_seen": ts})
-                cand["last_seen"] = ts
-                if cand["last_seen"] - cand["ts_start"] >= min_duration:
-                    track = ctx.tracks[track_id]
-                    event = Event(
-                        id=uuid.uuid4().hex, camera_id=self.camera.id, type=cfg.type,
-                        severity=rule.severity, track_id=track_id, bbox=track.bbox, conf=track.conf,
-                        ts_start=cand["ts_start"], ts_confirm=ts, zone_id=cfg.zone, extra=dict(extra or {}),
-                    )
-                    del self.candidates[key]
-                    self.open[key] = {"event": event, "last_seen": ts}
-                    result.new_events.append(event)
+                if self._apply_rule(cfg, ctx, ts, result):
+                    active_keys.add((cfg.type, cfg.zone))
+            except Exception as e:
+                key = (self.camera.id, cfg.type)
+                if key not in self.broken:
+                    self.broken.add(key)
+                    log.warning("камера %s: правило %s пропущено: %s", self.camera.id, cfg.type, e)
 
         for key in [k for k, c in self.candidates.items()
                     if ts - c["last_seen"] > GRACE or k[:2] not in active_keys or k[2] not in self.tracks]:
