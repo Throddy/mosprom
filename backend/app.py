@@ -25,6 +25,7 @@ from backend.draw import draw
 from backend.fixtures import gray_frame, make_event, save_snapshot, seed_events
 from backend.hub import STATUSES, Hub, Store, to_json
 from backend.pipeline import Pipeline
+from backend.privacy import blur_enabled, blur_people
 from backend.validation import sanitize, validate_camera
 from core.schemas import CameraConfig, Event, RuleConfig, Zone
 
@@ -100,6 +101,15 @@ def create_app() -> FastAPI:
     store = Store(load_active(), db)
     hub = Hub()
     cameras_lock = threading.Lock()
+    # Демо-стенд: только просмотр и лимит одновременных MJPEG-потоков
+    read_only = os.environ.get("READ_ONLY", "0") == "1"
+    max_streams = int(os.environ.get("MAX_STREAMS", "30"))
+    streams = {"open": 0}
+    streams_lock = threading.Lock()
+
+    def check_writable() -> None:
+        if read_only:
+            raise HTTPException(403, "Демо-стенд: только просмотр")
     interval = float(os.environ.get("FIXTURE_WS_INTERVAL", "10"))
     detector_backend = os.environ.get("DETECTOR_BACKEND") or "onnx"
     state = {"detector": None, "pipeline": None, "loop": None}
@@ -140,7 +150,8 @@ def create_app() -> FastAPI:
                 log.exception("камера %s: событие %s не сохранено", camera_id, event.id)
                 continue
             try:
-                snapshots.save_snapshot(frame, event, camera_id)
+                detections = state["pipeline"].snapshot(camera_id)["detections"] if state["pipeline"] else None
+                snapshots.save_snapshot(frame, event, camera_id, detections)
             except Exception:
                 log.error("камера %s: снимок события %s не записан", camera_id, event.id, exc_info=True)
         for event in result.closed_events:
@@ -211,6 +222,7 @@ def create_app() -> FastAPI:
 
     @app.put("/api/cameras/{camera_id}")
     def put_camera(camera_id: str, body: dict = Body(...)):
+        check_writable()
         # Чтение, изменение и запись камер под одной блокировкой: одновременные PUT не теряют изменения
         with cameras_lock:
             get_camera(camera_id)
@@ -242,9 +254,12 @@ def create_app() -> FastAPI:
         camera = get_camera(camera_id)
         pipeline = state["pipeline"]
         if pipeline is not None:
-            img = pipeline.snapshot(camera_id)["frame"]
+            snap = pipeline.snapshot(camera_id)
+            img = snap["frame"]
             if img is None:
                 raise HTTPException(503, "кадра ещё нет")
+            if blur_enabled() and snap["detections"]:
+                img = blur_people(img, snap["detections"])
             return Response(encode_jpeg(img), media_type="image/jpeg")
         return Response(encode_jpeg(camera_frame(camera)), media_type="image/jpeg")
 
@@ -258,17 +273,32 @@ def create_app() -> FastAPI:
             if snap["frame"] is not None and snap["ts"] != last_ts:
                 last_ts = snap["ts"]
                 info = f"{camera_id} fps {snap['fps']:.1f} lat {snap['latency_ms']:.0f} ms"
-                jpeg = encode_jpeg(draw(snap["frame"], snap["detections"], camera.zones, info, snap["tracks"]))
+                # Размытие голов до рисования разметки
+                img = blur_people(snap["frame"], snap["detections"]) if blur_enabled() else snap["frame"]
+                jpeg = encode_jpeg(draw(img, snap["detections"], camera.zones, info, snap["tracks"]))
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
                 await asyncio.sleep(1.0 / camera.fps if camera.fps > 0 else 0.1)
             else:
                 await asyncio.sleep(0.02)
 
+    async def limited(frames):
+        """Поток MJPEG в счётчике открытых /stream; счётчик уменьшается, когда клиент закрыл соединение."""
+        try:
+            async for chunk in frames:
+                yield chunk
+        finally:
+            with streams_lock:
+                streams["open"] -= 1
+
     @app.get("/api/cameras/{camera_id}/stream")
     async def stream(camera_id: str):
         get_camera(camera_id)
+        with streams_lock:
+            if streams["open"] >= max_streams:
+                raise HTTPException(503, "Слишком много зрителей, попробуйте позже")
+            streams["open"] += 1
         if state["pipeline"] is not None:
-            return StreamingResponse(pipeline_frames(state["pipeline"], camera_id),
+            return StreamingResponse(limited(pipeline_frames(state["pipeline"], camera_id)),
                                      media_type="multipart/x-mixed-replace; boundary=frame")
 
         async def frames():
@@ -280,7 +310,7 @@ def create_app() -> FastAPI:
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
                 await asyncio.sleep(0.5)
 
-        return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+        return StreamingResponse(limited(frames()), media_type="multipart/x-mixed-replace; boundary=frame")
 
     @app.get("/api/rules")
     def rules():
@@ -305,6 +335,7 @@ def create_app() -> FastAPI:
 
     @app.patch("/api/events/{event_id}")
     async def patch_event(event_id: str, body: EventPatch):
+        check_writable()
         if body.status not in STATUSES:
             raise HTTPException(400, f"unknown status {body.status}")
         view = store.set_status(event_id, body.status, body.comment)

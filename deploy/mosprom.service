@@ -1,0 +1,15 @@
+[Unit]
+Description=mosprom: контроль нарушений по видео, демо-стенд
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mosprom
+WorkingDirectory=/opt/mosprom
+EnvironmentFile=/opt/mosprom/.env
+ExecStart=/opt/mosprom/.venv/bin/python -m backend
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,5 @@
-"""Источники кадров: видеофайл, RTSP, папка с кадрами."""
+"""Источники кадров: видеофайл, RTSP, HTTP(S) поток, страница YouTube или Ivideon, папка с кадрами."""
+import logging
 import os
 import threading
 import time
@@ -7,8 +8,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from backend.validation import sanitize
+
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+log = logging.getLogger(__name__)
 
 
 def _loop() -> bool:
@@ -85,6 +89,8 @@ class FileSource(FrameSource):
 class RtspSource(FrameSource):
     """RTSP: отдельный поток читает кадры и хранит только последний."""
 
+    reconnect = 2.0  # пауза перед переподключением, с
+
     def __init__(self, url: str, fps: float):
         self.url = url
         self.pacer = _Pacer(fps)
@@ -94,17 +100,22 @@ class RtspSource(FrameSource):
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
+    def _stream_url(self) -> str | None:
+        return self.url
+
     def _run(self) -> None:
         while not self.stopped.is_set():
-            cap = cv2.VideoCapture(self.url)
-            while not self.stopped.is_set() and cap.isOpened():
-                ok, frame = cap.read()
-                if not ok:
-                    break
-                with self.lock:
-                    self.last = (time.time(), frame)
-            cap.release()
-            self.stopped.wait(2.0)
+            url = self._stream_url()
+            if url:
+                cap = cv2.VideoCapture(url)
+                while not self.stopped.is_set() and cap.isOpened():
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    with self.lock:
+                        self.last = (time.time(), frame)
+                cap.release()
+            self.stopped.wait(self.reconnect)
 
     def read(self) -> tuple[float, np.ndarray] | None:
         self.pacer.wait()
@@ -119,6 +130,69 @@ class RtspSource(FrameSource):
     def close(self) -> None:
         self.stopped.set()
         self.thread.join(timeout=3)
+
+
+class HttpSource(RtspSource):
+    """HTTP(S) поток, например HLS .m3u8: как RTSP, переподключение каждые 5 с."""
+
+    reconnect = 5.0
+
+
+class ResolvedSource(HttpSource):
+    """Страница YouTube или Ivideon: прямая ссылка на поток берётся через yt-dlp.
+    При обрыве ссылка получается заново, но не чаще раза в RESOLVE_EVERY секунд."""
+
+    RESOLVE_EVERY = 60.0
+
+    def __init__(self, page: str, fps: float):
+        self.page = page
+        self.direct: str | None = None
+        self.resolved_at = 0.0
+        self.warned = False
+        super().__init__(page, fps)
+
+    def _stream_url(self) -> str | None:
+        # Не чаще раза в RESOLVE_EVERY секунд, в том числе после неудачи
+        if self.resolved_at == 0.0 or time.monotonic() - self.resolved_at >= self.RESOLVE_EVERY:
+            self.resolved_at = time.monotonic()
+            try:
+                self.direct = resolve_stream(self.page)
+                self.warned = False
+            except Exception as e:
+                if not self.warned:
+                    self.warned = True
+                    log.warning("источник %s: ссылка на поток не получена: %s", sanitize(self.page), sanitize(e))
+                self.direct = None
+        return self.direct
+
+
+class _SilentLogger:
+    def debug(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        pass
+
+
+def resolve_stream(page: str) -> str:
+    """Прямая ссылка на поток страницы YouTube или Ivideon через yt-dlp."""
+    import yt_dlp
+
+    # Свой вывод yt-dlp в stderr отключён: причина ошибки пишется в лог один раз
+    options = {"quiet": True, "no_warnings": True, "format": "best[height<=720]/best", "logger": _SilentLogger()}
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(page, download=False)
+    url = info.get("url") or (info.get("formats") or [{}])[-1].get("url")
+    if not url:
+        raise ValueError("в ответе yt-dlp нет url")
+    return url
+
+
+def _needs_resolve(source: str) -> bool:
+    return any(host in source for host in ("youtube.com/", "youtu.be/", "ivideon.com/"))
 
 
 class FolderSource(FrameSource):
@@ -146,6 +220,8 @@ class FolderSource(FrameSource):
 def open_source(source: str, fps: float) -> FrameSource:
     if source.startswith("rtsp://"):
         return RtspSource(source, fps)
+    if source.startswith(("http://", "https://")):
+        return ResolvedSource(source, fps) if _needs_resolve(source) else HttpSource(source, fps)
     path = Path(source)
     if not path.is_absolute():
         path = ROOT / path

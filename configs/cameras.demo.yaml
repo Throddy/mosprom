@@ -1,0 +1,59 @@
+# Камеры демо-стенда (deploy/env.demo: CAMERAS_PATH=configs/cameras.demo.yaml).
+# Ролик и зона идут по нашим видео, пережатым scripts/transcode.py и scripts/make_reel.py.
+# Трансляции live_* — публичные потоки производств; лица размываются (BLUR_FACES=1).
+cameras:
+  - id: demo_reel
+    name: "Склад: смена (ролик)"
+    source: data/videos/demo/reel.mp4
+    fps: 5
+    zones: []
+    rules:
+      - {type: fall, enabled: true}
+      - {type: running, enabled: true}
+      - {type: proximity, enabled: true}
+  - id: demo_zone
+    name: "Склад: зона у двери"
+    source: data/videos/demo/danger_zone.mp4
+    fps: 5
+    zones:
+      - id: tape
+        name: Зона по скотчу
+        polygon: [[0.13, 0.97], [0.36, 0.82], [0.28, 0.73], [0.15, 0.69], [0.05, 0.69], [0.05, 1.0]]
+    rules:
+      - {type: danger_zone, enabled: true, zone: tape}
+  - id: live_1
+    name: "Типография «Интегра», Воронеж"
+    source: "https://public.ivideon.com/camera/100-jU6oJ0YNLt1W4d6Y1huuDH:0/"
+    fps: 2
+    zones: []
+    rules:
+      - {type: fall, enabled: true}
+      - {type: running, enabled: true}
+      - {type: proximity, enabled: true}
+  - id: live_2
+    name: "Мебельное производство, Щёлково"
+    source: "https://public.ivideon.com/camera/100-cjIcw0QN3FvAT9u1khXedw:65536/"
+    fps: 2
+    zones: []
+    rules:
+      - {type: fall, enabled: true}
+      - {type: running, enabled: true}
+      - {type: proximity, enabled: true}
+  - id: live_3
+    name: "«Терем Про»: главный цех, общий вид"
+    source: "https://stream.terem-pro.ru/cam_ac/master.m3u8"
+    fps: 2
+    zones: []
+    rules:
+      - {type: fall, enabled: true}
+      - {type: running, enabled: true}
+      - {type: proximity, enabled: true}
+  - id: live_4
+    name: "«Терем Про»: главный цех, вид сбоку на станки"
+    source: "https://stream.terem-pro.ru/cam_bc/master.m3u8"
+    fps: 2
+    zones: []
+    rules:
+      - {type: fall, enabled: true}
+      - {type: running, enabled: true}
+      - {type: proximity, enabled: true}
