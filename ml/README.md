@@ -172,20 +172,20 @@ cp ml/weights/linq/yolov8n-pose-cut/yolov8n-pose_tail.onnx ml/weights/linq/yolov
 
 ## Метрики
 
-`reports/metrics.json` (ML-7), бэкенд `onnx`. Финальная версия правил (BE-11…BE-11f), пороги подобраны на `data/videos/dev/`, метрики посчитаны на независимых дублях в `data/videos/test/`. Разметка `data/test_set/labels.csv`.
+`reports/metrics.json` (ML-7), бэкенд `onnx`. Финальная версия правил (BE-11…BE-11f) и подавление повторов (BE-17), пороги подобраны на `data/videos/dev/`, метрики посчитаны на независимых дублях в `data/videos/test/`. Разметка `data/test_set/labels.csv`.
 
 | Тип | Видео и камера | tp | fp | fn | precision | recall |
 |---|---|---|---|---|---|---|
 | `fall` | `fall_02.mov`, `test_fall` | 1 | 0 | 0 | 1.0 | 1.0 |
 | `running` | `running_03.mov`…`running_07.mov`; `test_running` | 1 | 1 | 4 | 0.5 | 0.2 |
 | `danger_zone` | `danger_zone_02.mov`, `test_danger_zone_02` | 1 | 0 | 0 | 1.0 | 1.0 |
-| `proximity` | `running_05.mov`…`running_07.mov`; `test_proximity` | 3 | 3 | 0 | 0.5 | 1.0 |
+| `proximity` | `running_05.mov`…`running_07.mov`; `test_proximity` | 3 | 1 | 0 | 0.75 | 1.0 |
 
 - Задержка тревоги `fall`: 3.3 с от начала падения (`ts_confirm` 10.3 с при начале разметки 7.0 с), из них 1.5 с — ожидание неподвижности (BE-11).
 - Задержка тревоги `danger_zone`: 1.6 с от входа в зону (`ts_confirm` 9.6 с при начале разметки 8.0 с).
 - Сцена без нарушений `normal_walking.MOV`, 7 с: 0 тревог на камере `test_normal` (`fall`, `running`, `proximity`).
 - Правило `running` распознаёт бег: на `running.mov` тревога через 4,3 с, на контрольном `running_07.mov` через 1,3 с. Развитие: калибровка камеры по полу, съёмка 25–30 кадров/с для подсчёта частоты шагов. Подробно: `backend/README.md`, раздел «Подбор порогов».
-- Сближение с техникой: на контрольных видео найдено на 3 из 3, тревога через 2,5–6,3 с.
+- Сближение с техникой: найдено на 3 из 3 новых видео, тревога через 2,5–6,3 с. После подавления повторов (BE-17) лишних событий 1 вместо 3.
 
 ## Ограничения
 
