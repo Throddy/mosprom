@@ -1,7 +1,9 @@
 """Проверка камеры из PUT /api/cameras/{id}."""
 import math
+import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -25,15 +27,36 @@ def _nonempty(value) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
+def remote_hosts() -> list[str]:
+    """Хосты из REMOTE_HOSTS через запятую. По умолчанию пусто: удалённые источники запрещены."""
+    return [h.strip().lower().rstrip(".") for h in os.environ.get("REMOTE_HOSTS", "").split(",") if h.strip()]
+
+
+def remote_allowed(source: str) -> bool:
+    """Хост источника точно совпадает с хостом из REMOTE_HOSTS или является его поддоменом.
+    Сравнивается hostname из urlsplit, а не подстрока адреса."""
+    try:
+        parts = urlsplit(source)
+        host = (parts.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    if not host or parts.username or parts.password:
+        return False
+    return any(host == h or host.endswith("." + h) for h in remote_hosts())
+
+
 def _check_source(source, errors: list[str]) -> None:
     if not isinstance(source, str) or not source:
         errors.append("source: нужна строка")
         return
     if source.startswith(("rtsp://", "http://", "https://")):
+        if not remote_allowed(source):
+            errors.append(f"source: хост {sanitize(urlsplit(source).hostname)} не входит в REMOTE_HOSTS")
         return
     path = Path(source)
     if path.is_absolute() or ".." in path.parts or not source.startswith("data/"):
-        errors.append("source: нужен rtsp://, http(s):// или относительный путь внутри data/ без ..")
+        errors.append("source: нужен rtsp://, http(s):// с хостом из REMOTE_HOSTS или относительный путь "
+                      "внутри data/ без ..")
         return
     if not (ROOT / path).exists():
         errors.append(f"source: {sanitize(source)} не найден")

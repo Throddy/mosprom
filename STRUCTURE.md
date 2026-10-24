@@ -54,6 +54,7 @@
 ├── data/
 │   ├── demo.mp4             Максим    10 с, до 10 МБ, для smoke.py
 │   ├── videos/              Никитос   в git не попадает, хранится в общей папке
+│   │   └── demo/            Максим    исключение: копии 720p для быстрого запуска и стенда, до 50 МБ на файл, в git
 │   └── test_set/
 │       └── labels.csv       Никитос   разметка тестовых видео
 │
@@ -64,6 +65,8 @@
 └── docs/
     └── presentation/        Никитос
 ```
+
+Видео в git не попадают. Исключение — `data/videos/demo/`: копии 720p для быстрого запуска и демо-стенда, до 50 МБ на файл, владелец Максим.
 
 ## `.gitignore`
 
@@ -78,7 +81,8 @@ ml/weights/
 backend/media/
 backend/data/
 configs/cameras.local.yaml
-data/videos/
+data/videos/*
+!data/videos/demo/
 *.pt
 *.onnx
 *.tpu

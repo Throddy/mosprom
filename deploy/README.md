@@ -24,11 +24,9 @@
 
 ```bash
 npm --prefix frontend ci && npm --prefix frontend run build
-python scripts/transcode.py --src data/videos/dev --dst data/videos/demo
-python scripts/make_reel.py --dst data/videos/demo/reel.mp4 data/videos/demo/normal_sit_stand.mp4 data/videos/demo/fall.mp4 data/videos/demo/normal_sit_stand.mp4 data/videos/demo/proximity.mp4 data/videos/demo/normal_sit_stand.mp4 data/videos/demo/running.mp4
 ```
 
-Исходные видео лежат в `data/videos/dev/` (общая папка команды). Пережатые видео — в `data/videos/demo/`, в git они не попадают.
+Видео стенда (`data/videos/demo/`, копии 720p) лежат в репозитории и приходят на сервер вместе с кодом при `git clone`.
 
 ## 4. Установка на сервере
 
@@ -40,7 +38,7 @@ bash install.sh <домен>
 
 Скрипт ставит пакеты и Caddy, создаёт пользователя `mosprom`, клонирует код в `/opt/mosprom`, ставит зависимости Python (около 5 минут) и включает сервисы. Если весов ещё нет, он напишет «Загрузите веса: deploy/upload.sh» — это нормально.
 
-## 5. Загрузка весов, сайта и видео
+## 5. Загрузка весов и сайта
 
 На Mac из корня репозитория:
 
@@ -48,7 +46,7 @@ bash install.sh <домен>
 bash deploy/upload.sh root@<IP>
 ```
 
-Скрипт копирует `ml/weights/*.onnx`, `frontend/dist/` и `data/videos/demo/` и перезапускает сервис.
+Скрипт копирует `ml/weights/*.onnx` и `frontend/dist/` и перезапускает сервис. Видео он не копирует: они уже в репозитории.
 
 ## 6. Проверка
 
@@ -56,7 +54,7 @@ bash deploy/upload.sh root@<IP>
 
 ## 7. Обновление и логи
 
-Обновить код: на сервере `bash install.sh <домен>` ещё раз. Если менялся фронтенд или видео — на Mac `bash deploy/upload.sh root@<IP>`.
+Обновить код: на сервере `bash install.sh <домен>` ещё раз. Если менялся фронтенд или веса — на Mac `bash deploy/upload.sh root@<IP>`.
 
 Логи:
 

@@ -1,13 +1,18 @@
 """Источники кадров: видеофайл, RTSP, HTTP(S) поток, страница YouTube или Ivideon, папка с кадрами."""
 import logging
 import os
+import re
+import subprocess
 import threading
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import cv2
 import numpy as np
 
+from backend import ivideon
 from backend.validation import sanitize
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,9 +59,13 @@ class FileSource(FrameSource):
         self.pacer = _Pacer(fps)
         self.pos = 0.0  # номер следующего кадра для выдачи, в кадрах видео
         self.index = 0  # номер следующего кадра в cap
+        self.last_frame: np.ndarray | None = None
 
     def _grab_frame(self) -> np.ndarray | None:
         target = int(self.pos)
+        if target < self.index and self.last_frame is not None:
+            # Частота чтения выше частоты видео: повторить кадр, чтобы видео шло в реальном времени
+            return self.last_frame
         while self.index < target:
             if not self.cap.grab():
                 return None
@@ -65,6 +74,7 @@ class FileSource(FrameSource):
         if not ok:
             return None
         self.index += 1
+        self.last_frame = frame
         return frame
 
     def read(self) -> tuple[float, np.ndarray] | None:
@@ -76,6 +86,7 @@ class FileSource(FrameSource):
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             self.pos = 0.0
             self.index = 0
+            self.last_frame = None
             frame = self._grab_frame()
             if frame is None:
                 return None
@@ -133,13 +144,44 @@ class RtspSource(FrameSource):
 
 
 class HttpSource(RtspSource):
-    """HTTP(S) поток, например HLS .m3u8: как RTSP, переподключение каждые 5 с."""
+    """HTTP(S) поток, например HLS .m3u8: как RTSP, переподключение каждые 5 с.
+    Для главного плейлиста HLS выбирается вариант до 720p."""
 
     reconnect = 5.0
 
+    def _stream_url(self) -> str | None:
+        if urllib.parse.urlsplit(self.url).path.endswith(".m3u8"):
+            try:
+                return hls_variant(self.url)
+            except Exception as e:
+                log.warning("источник %s: плейлист HLS не прочитан: %s", sanitize(ivideon.safe(self.url)), sanitize(e))
+                return self.url
+        return self.url
+
+
+def hls_variant(url: str, max_height: int = 720) -> str:
+    """Для главного плейлиста HLS — вариант с наибольшей высотой не больше max_height, а если таких нет,
+    с наименьшей высотой. Для плейлиста одного варианта — тот же адрес."""
+    request = urllib.request.Request(url, headers={"User-Agent": ivideon.HEADERS["User-Agent"]})
+    with urllib.request.urlopen(request, timeout=15, context=ivideon._context()) as r:
+        text = r.read(65536).decode("utf-8", "replace")
+    variants, height = [], None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("#EXT-X-STREAM-INF"):
+            m = re.search(r"RESOLUTION=(\d+)x(\d+)", line)
+            height = int(m.group(2)) if m else 0
+        elif line and not line.startswith("#") and height is not None:
+            variants.append((height, urllib.parse.urljoin(url, line)))
+            height = None
+    if not variants:
+        return url
+    fit = [v for v in variants if 0 < v[0] <= max_height]
+    return max(fit)[1] if fit else min(variants)[1]
+
 
 class ResolvedSource(HttpSource):
-    """Страница YouTube или Ivideon: прямая ссылка на поток берётся через yt-dlp.
+    """Источник, у которого прямая ссылка на поток получается отдельным запросом.
     При обрыве ссылка получается заново, но не чаще раза в RESOLVE_EVERY секунд."""
 
     RESOLVE_EVERY = 60.0
@@ -151,19 +193,79 @@ class ResolvedSource(HttpSource):
         self.warned = False
         super().__init__(page, fps)
 
+    def _resolve(self) -> str:
+        return resolve_stream(self.page)
+
+    def _label(self) -> str:
+        return sanitize(self.page)
+
     def _stream_url(self) -> str | None:
         # Не чаще раза в RESOLVE_EVERY секунд, в том числе после неудачи
         if self.resolved_at == 0.0 or time.monotonic() - self.resolved_at >= self.RESOLVE_EVERY:
             self.resolved_at = time.monotonic()
             try:
-                self.direct = resolve_stream(self.page)
+                self.direct = self._resolve()
                 self.warned = False
             except Exception as e:
                 if not self.warned:
                     self.warned = True
-                    log.warning("источник %s: ссылка на поток не получена: %s", sanitize(self.page), sanitize(e))
+                    log.warning("источник %s: ссылка на поток не получена: %s", self._label(), sanitize(e))
                 self.direct = None
         return self.direct
+
+
+class IvideonSource(ResolvedSource):
+    """Публичная камера Ivideon: поток FLV по ссылке из openapi, декодирует ffmpeg в 1280x720.
+
+    Ссылка содержит токен. cv2.VideoCapture при ошибке открытия печатает адрес целиком в stderr,
+    поэтому поток читает подпроцесс ffmpeg с -loglevel quiet и без stderr: токен не попадает в лог.
+    """
+
+    WIDTH, HEIGHT = 1280, 720
+
+    def __init__(self, page: str, fps: float):
+        self.camera_id = ivideon.camera_id(page)
+        self.show_fps = fps
+        super().__init__(page, fps)
+
+    def _run(self) -> None:
+        size = self.WIDTH * self.HEIGHT * 3
+        while not self.stopped.is_set():
+            url = self._stream_url()
+            if url:
+                proc = subprocess.Popen(
+                    ["ffmpeg", "-loglevel", "quiet", "-nostdin", "-i", url, "-an",
+                     "-vf", f"scale={self.WIDTH}:{self.HEIGHT},fps={self.show_fps:g}",
+                     "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                self.proc = proc
+                try:
+                    while not self.stopped.is_set():
+                        data = proc.stdout.read(size)
+                        if len(data) < size:
+                            break
+                        frame = np.frombuffer(data, np.uint8).reshape(self.HEIGHT, self.WIDTH, 3)
+                        with self.lock:
+                            self.last = (time.time(), frame)
+                finally:
+                    proc.kill()
+                    proc.wait()
+            self.stopped.wait(self.reconnect)
+
+    def close(self) -> None:
+        self.stopped.set()
+        proc = getattr(self, "proc", None)
+        if proc is not None:
+            proc.kill()
+        self.thread.join(timeout=3)
+
+    def _resolve(self) -> str:
+        url = ivideon.resolve(self.camera_id, "flv")
+        log.info("ivideon %s: поток %s", self.camera_id, urllib.parse.urlsplit(url).hostname)
+        return url
+
+    def _label(self) -> str:
+        return f"ivideon {self.camera_id}"
 
 
 class _SilentLogger:
@@ -178,7 +280,7 @@ class _SilentLogger:
 
 
 def resolve_stream(page: str) -> str:
-    """Прямая ссылка на поток страницы YouTube или Ivideon через yt-dlp."""
+    """Прямая ссылка на поток страницы YouTube через yt-dlp."""
     import yt_dlp
 
     # Свой вывод yt-dlp в stderr отключён: причина ошибки пишется в лог один раз
@@ -191,8 +293,17 @@ def resolve_stream(page: str) -> str:
     return url
 
 
+YOUTUBE_HOSTS = ("youtube.com", "youtu.be")
+
+
+def _host_in(host: str | None, allowed) -> bool:
+    """Хост точно совпадает с одним из allowed или является его поддоменом."""
+    host = (host or "").lower().rstrip(".")
+    return any(host == a or host.endswith("." + a) for a in allowed)
+
+
 def _needs_resolve(source: str) -> bool:
-    return any(host in source for host in ("youtube.com/", "youtu.be/", "ivideon.com/"))
+    return _host_in(urllib.parse.urlsplit(source).hostname, YOUTUBE_HOSTS)
 
 
 class FolderSource(FrameSource):
@@ -221,6 +332,8 @@ def open_source(source: str, fps: float) -> FrameSource:
     if source.startswith("rtsp://"):
         return RtspSource(source, fps)
     if source.startswith(("http://", "https://")):
+        if ivideon.camera_id(source):
+            return IvideonSource(source, fps)
         return ResolvedSource(source, fps) if _needs_resolve(source) else HttpSource(source, fps)
     path = Path(source)
     if not path.is_absolute():

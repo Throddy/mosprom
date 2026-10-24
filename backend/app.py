@@ -24,7 +24,7 @@ from backend.db import EventDB
 from backend.draw import draw
 from backend.fixtures import gray_frame, make_event, save_snapshot, seed_events
 from backend.hub import STATUSES, Hub, Store, to_json
-from backend.pipeline import Pipeline
+from backend.pipeline import Pipeline, stream_fps
 from backend.privacy import blur_enabled, blur_people
 from backend.validation import sanitize, validate_camera
 from core.schemas import CameraConfig, Event, RuleConfig, Zone
@@ -106,6 +106,9 @@ def create_app() -> FastAPI:
     max_streams = int(os.environ.get("MAX_STREAMS", "30"))
     streams = {"open": 0}
     streams_lock = threading.Lock()
+    # Общий MJPEG: на камеру одна задача рисует и сжимает кадр, все зрители получают те же байты
+    feeds: dict[str, dict] = {}
+    mjpeg = {"encodes": {}}
 
     def check_writable() -> None:
         if read_only:
@@ -185,6 +188,8 @@ def create_app() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     app.state.store = store
     app.state.hub = hub
+    app.state.mjpeg = mjpeg
+    app.state.pipeline_state = state
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
     @app.exception_handler(RequestValidationError)
@@ -255,7 +260,7 @@ def create_app() -> FastAPI:
         pipeline = state["pipeline"]
         if pipeline is not None:
             snap = pipeline.snapshot(camera_id)
-            img = snap["frame"]
+            img = snap["display"] if snap["display"] is not None else snap["frame"]
             if img is None:
                 raise HTTPException(503, "кадра ещё нет")
             if blur_enabled() and snap["detections"]:
@@ -263,23 +268,49 @@ def create_app() -> FastAPI:
             return Response(encode_jpeg(img), media_type="image/jpeg")
         return Response(encode_jpeg(camera_frame(camera)), media_type="image/jpeg")
 
-    async def pipeline_frames(pipeline: Pipeline, camera_id: str):
+    def render(camera_id: str, camera: CameraConfig, snap: dict) -> bytes:
+        """Кадр для показа с разметкой последнего результата детектора, один JPEG на всех зрителей."""
+        info = f"{camera_id} fps {snap['fps']:.1f} lat {snap['latency_ms']:.0f} ms"
+        # Размытие голов до рисования разметки и до сжатия
+        img = blur_people(snap["display"], snap["detections"]) if blur_enabled() else snap["display"]
+        jpeg = encode_jpeg(draw(img, snap["detections"], camera.zones, info, snap["tracks"]))
+        mjpeg["encodes"][camera_id] = mjpeg["encodes"].get(camera_id, 0) + 1
+        return jpeg
+
+    async def produce(pipeline: Pipeline, camera_id: str, feed: dict) -> None:
+        """Пока есть зрители, раз в 1/STREAM_FPS с рисует и сжимает новый кадр камеры."""
+        period = 1.0 / max(stream_fps(), 1.0)
         last_ts = None
-        while True:
+        while feed["clients"] > 0:
             camera = store.cameras.get(camera_id)
             if camera is None:
-                return
+                break
             snap = pipeline.snapshot(camera_id)
-            if snap["frame"] is not None and snap["ts"] != last_ts:
-                last_ts = snap["ts"]
-                info = f"{camera_id} fps {snap['fps']:.1f} lat {snap['latency_ms']:.0f} ms"
-                # Размытие голов до рисования разметки
-                img = blur_people(snap["frame"], snap["detections"]) if blur_enabled() else snap["frame"]
-                jpeg = encode_jpeg(draw(img, snap["detections"], camera.zones, info, snap["tracks"]))
+            if snap["display"] is not None and snap["display_ts"] != last_ts:
+                last_ts = snap["display_ts"]
+                jpeg = await asyncio.to_thread(render, camera_id, camera, snap)
+                async with feed["cond"]:
+                    feed["jpeg"] = jpeg
+                    feed["seq"] += 1
+                    feed["cond"].notify_all()
+            await asyncio.sleep(period)
+        feed["task"] = None
+
+    async def pipeline_frames(pipeline: Pipeline, camera_id: str):
+        feed = feeds.setdefault(camera_id, {"jpeg": None, "seq": 0, "clients": 0, "task": None,
+                                            "cond": asyncio.Condition()})
+        feed["clients"] += 1
+        if feed["task"] is None:
+            feed["task"] = asyncio.create_task(produce(pipeline, camera_id, feed))
+        seen = 0  # номер последнего отданного кадра; 0 — кадров ещё не было
+        try:
+            while store.cameras.get(camera_id) is not None:
+                async with feed["cond"]:
+                    await feed["cond"].wait_for(lambda: feed["jpeg"] is not None and feed["seq"] != seen)
+                    seen, jpeg = feed["seq"], feed["jpeg"]
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
-                await asyncio.sleep(1.0 / camera.fps if camera.fps > 0 else 0.1)
-            else:
-                await asyncio.sleep(0.02)
+        finally:
+            feed["clients"] -= 1
 
     async def limited(frames):
         """Поток MJPEG в счётчике открытых /stream; счётчик уменьшается, когда клиент закрыл соединение."""
