@@ -29,11 +29,11 @@ def _check_source(source, errors: list[str]) -> None:
     if not isinstance(source, str) or not source:
         errors.append("source: нужна строка")
         return
-    if source.startswith("rtsp://"):
+    if source.startswith(("rtsp://", "http://", "https://")):
         return
     path = Path(source)
     if path.is_absolute() or ".." in path.parts or not source.startswith("data/"):
-        errors.append("source: нужен rtsp:// или относительный путь внутри data/ без ..")
+        errors.append("source: нужен rtsp://, http(s):// или относительный путь внутри data/ без ..")
         return
     if not (ROOT / path).exists():
         errors.append(f"source: {sanitize(source)} не найден")
