@@ -18,8 +18,9 @@ from ml import ROOT, create_detector  # noqa: E402
 from ml.prepost import INPUT_SIZE  # noqa: E402
 
 MODEL = "yolov8n-pose+yolov8n"
-STREAMS = (1, 2, 4, 8)
-WARMUP_CALLS = 5
+STREAMS = {"onnx": (1, 2, 4, 8), "linq": (1, 2, 4, 8, 16)}
+# Для linq прогрев длиннее: программа должна загрузиться на все воркеры сервиса.
+WARMUP_CALLS = {"onnx": 5, "linq": 32}
 FRAME_LIMIT = 100
 ACCELERATOR_FRAMES = 30
 LINQ_DEVICE = "LinQ TPU, 1 плата, через ретранслятор и сервис RabbitMQ"
@@ -33,16 +34,16 @@ def load_frames(folder: Path) -> list[np.ndarray]:
     return [cv2.imread(str(path)) for path in paths]
 
 
-def measure(detector: Detector, frames: list[np.ndarray], streams: int,
+def measure(detector: Detector, frames: list[np.ndarray], streams: int, warmup_calls: int,
             seconds: float) -> tuple[float, dict[str, float]]:
     """fps и среднее время на кадр в мс; кадры раздаются потокам по кругу."""
     def batch(call: int) -> list[np.ndarray]:
         return [frames[(call * streams + k) % len(frames)] for k in range(streams)]
 
-    for call in range(WARMUP_CALLS):
+    for call in range(warmup_calls):
         detector.infer(batch(call))
     totals = {"pre": 0.0, "infer": 0.0, "post": 0.0}
-    processed, call = 0, WARMUP_CALLS
+    processed, call = 0, warmup_calls
     started = time.perf_counter()
     while time.perf_counter() - started < seconds:
         detector.infer(batch(call))
@@ -112,8 +113,8 @@ def main() -> None:
     records = []
     for backend in args.backends:
         detector = create_detector(backend)
-        for streams in STREAMS:
-            fps, latency = measure(detector, frames, streams, args.seconds)
+        for streams in STREAMS[backend]:
+            fps, latency = measure(detector, frames, streams, WARMUP_CALLS[backend], args.seconds)
             records.append(record(backend, devices[backend], streams, fps, latency))
             print(f"{backend} streams={streams}: fps {fps:.3f}, "
                   f"total {latency['total']:.1f} мс", flush=True)

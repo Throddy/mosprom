@@ -76,6 +76,23 @@ tail -n 5 relay.log
 
 Остановка: `pkill -f "python -m ml.relay"`.
 
+## Запуск 8 процессов (ML-4c)
+
+Очередь `input` сервиса одна на все команды, её обслуживают 16 воркеров. Один процесс ретранслятора держит в работе один кадр (`prefetch_count = 1`), параллельность даёт число процессов `N = 8`. `relay.env` на сервере уже есть.
+
+1. Загрузить `~/linq/upload/relay.tgz` кнопкой ↑ в папку `examples`.
+2. Выполнить ячейку в `example.ipynb`: `!tar -xzf relay.tgz -C ~/relay`.
+3. В терминале Jupyter остановить старые процессы и запустить 8 новых:
+
+```bash
+pkill -f "python -m ml.relay"
+cd ~/relay && set -a && . ./relay.env && set +a
+for i in $(seq 1 8); do setsid nohup python -m ml.relay > relay_$i.log 2>&1 < /dev/null & done
+sleep 5; pgrep -af ml.relay | wc -l
+```
+
+Последняя команда выводит `8`. У очереди `relay.<LINQ_LOGIN>.in` должно быть 8 потребителей.
+
 ## Проверка
 
 Ретранслятор, запущенный на Mac, `bus.jpg` 810×1080 через `LinqRelayDetector`: 4 объекта, как у `onnx` (`bus` 1, `person` 3), IoU с `onnx` 0.937–0.983, `kpts` формы `(17, 3)`, `infer([])` возвращает `[]`.
