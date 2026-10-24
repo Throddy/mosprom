@@ -1,6 +1,6 @@
 """Прогон видео набора для настройки против разметки, для подбора порогов в BE-11.
 
-python scripts/eval_offline.py [--labels data/videos/test/labels.csv] [--videos data/videos/test]
+python scripts/eval_offline.py [--labels data/videos/test/labels.csv] [--videos data/videos/test] [--trace TYPE]
 
 Официальные метрики считает ML-7 на контрольном наборе, этот скрипт их не заменяет.
 """
@@ -24,10 +24,56 @@ def overlaps(event, t_start: float, t_end: float) -> bool:
     return event.ts_start <= t_end and event.ts_end >= t_start
 
 
+def trace(video: Path, camera_id: str, detector) -> None:
+    """Покадрово для каждого person: ts, track_id, точка ног в долях кадра, высота бокса,
+    скорость v по формуле running и отношение высот бокса h_last / h_first за окно running."""
+    import cv2
+
+    from logic import Engine
+    from logic.geometry import bbox_height, foot_point
+    from logic.rules import RULES
+    from logic.rules.running import speed
+
+    camera = next(c for c in load_cameras(TEST_CAMERAS) if c.id == camera_id)
+    running_cfg = next((r for r in camera.rules if r.type == "running"), None)
+    window = float(RULES["running"].param(running_cfg, "window")) if running_cfg else 1.0
+    engine = Engine(camera)
+    cap = cv2.VideoCapture(str(video))
+    step = (cap.get(cv2.CAP_PROP_FPS) or 25.0) / camera.fps
+    index, n, next_pos = 0, 0, 0.0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if index >= next_pos:
+            ts = n / camera.fps
+            h, w = frame.shape[:2]
+            result = engine.process(ts, w, h, detector.infer([frame])[0])
+            for track in result.tracks:
+                if track.cls != "person":
+                    continue
+                state = engine.tracks[track.track_id]
+                fx, fy = foot_point(state.bbox)
+                points = [b for t, b, _ in state.history if t >= ts - window]
+                v = speed(state, ts, window)
+                ratio = bbox_height(points[-1]) / bbox_height(points[0]) if len(points) > 1 else None
+                print(json.dumps({
+                    "ts": round(ts, 1), "track_id": track.track_id,
+                    "foot": [round(fx / w, 3), round(fy / h, 3)], "h": round(bbox_height(state.bbox), 1),
+                    "v": None if v is None else round(v, 2),
+                    "h_ratio": None if ratio is None else round(ratio, 2),
+                }))
+            n += 1
+            next_pos += step
+        index += 1
+    cap.release()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Прогон тестовых видео против разметки")
     parser.add_argument("--labels", default="data/videos/test/labels.csv")
     parser.add_argument("--videos", default="data/videos/test")
+    parser.add_argument("--trace", metavar="TYPE", help="покадровая трассировка person на видео этого типа")
     args = parser.parse_args()
 
     test_ids = {c.id for c in load_cameras(TEST_CAMERAS)}
@@ -44,6 +90,8 @@ def main() -> int:
         for video, labels in by_video.items():
             stem = Path(video).stem
             camera_id = f"test_{stem}" if f"test_{stem}" in test_ids else f"test_{labels[0]['type']}"
+            if args.trace and labels[0]["type"] == args.trace:
+                trace(Path(args.videos) / video, camera_id, detector)
             events, _, _ = run_offline(str(Path(args.videos) / video), camera_id, str(Path(tmp) / f"{stem}.jsonl"),
                                        detector=detector)
             matched = set()

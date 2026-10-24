@@ -9,12 +9,12 @@ cameras:
         polygon: [[0.10, 0.40], [0.55, 0.40], [0.55, 0.95], [0.10, 0.95]]
     rules:
       - {type: danger_zone, enabled: true, zone: forklift_lane, schedule: ["07:55", "12:00"], params: {min_duration: 1.0}}
-      - {type: fall, enabled: true, params: {min_duration: 3.0}}
+      - {type: fall, enabled: true, params: {min_duration: 1.5}}
   - id: cam2
     name: Цех 1, участок сборки
     source: data/demo.mp4
     fps: 10
     zones: []
     rules:
-      - {type: fall, enabled: true, params: {min_duration: 3.0}}
+      - {type: fall, enabled: true, params: {min_duration: 1.5}}
       - {type: running, enabled: true, params: {speed: 1.5, min_duration: 1.0}}
