@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend import snapshots
 from backend.cameras import load_cameras
@@ -66,7 +66,7 @@ class CameraIn(BaseModel):
 
 class EventPatch(BaseModel):
     status: str
-    comment: str | None = None
+    comment: str | None = Field(None, max_length=1000)
 
 
 def read_json(path: Path, default):
@@ -106,6 +106,11 @@ def create_app() -> FastAPI:
         save_snapshot(event, MEDIA_DIR)
         return store.add_event(event, f"{event.camera_id}/{event.id}.jpg")
 
+    if not use_pipeline:
+        # Тестовые события засеваются сразу, без lifespan: TestClient без with тоже их видит
+        for seed in seed_events():
+            add_fixture_event(seed)
+
     async def fixture_loop():
         while True:
             await asyncio.sleep(interval)
@@ -120,13 +125,18 @@ def create_app() -> FastAPI:
 
     def on_result(camera_id, ts, frame, result):
         for event in result.new_events:
+            # Сначала событие в базу и в WebSocket, снимок после: без снимка тревога не теряется.
             try:
-                rel = snapshots.save_snapshot(frame, event, camera_id)
-                send("event_new", store.add_event(event, rel))
+                send("event_new", store.add_event(event, snapshots.snapshot_path(camera_id, event.id)))
                 log.info("event new: camera %s type %s track %s ts_confirm %.2f", camera_id, event.type,
                          event.track_id, event.ts_confirm)
             except Exception:
                 log.exception("камера %s: событие %s не сохранено", camera_id, event.id)
+                continue
+            try:
+                snapshots.save_snapshot(frame, event, camera_id)
+            except Exception:
+                log.error("камера %s: снимок события %s не записан", camera_id, event.id, exc_info=True)
         for event in result.closed_events:
             try:
                 send("event_update", store.close_event(event.id, event.ts_end))
@@ -147,8 +157,6 @@ def create_app() -> FastAPI:
             state["pipeline"] = Pipeline(list(store.cameras.values()), state["detector"], on_result)
             state["pipeline"].start()
         else:
-            for event in seed_events():
-                add_fixture_event(event)
             task = asyncio.create_task(fixture_loop())
         yield
         if task is not None:
@@ -263,8 +271,8 @@ def create_app() -> FastAPI:
         severity: str | None = None,
         ts_from: float | None = Query(None, alias="from"),
         ts_to: float | None = Query(None, alias="to"),
-        limit: int = 50,
-        offset: int = 0,
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
     ):
         items, total = store.list_events(type=type, camera_id=camera_id, zone_id=zone_id, status=status,
                                          severity=severity, ts_from=ts_from, ts_to=ts_to,

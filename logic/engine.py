@@ -53,6 +53,7 @@ class Engine:
     def update_config(self, camera: CameraConfig) -> None:
         with self.lock:
             self.camera = camera
+            self.broken.clear()
 
     def process(self, ts: float, width: int, height: int, detections: list[Detection]) -> Result:
         with self.lock:

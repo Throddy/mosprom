@@ -17,6 +17,7 @@ python -m backend
 | `FIXTURE_WS_INTERVAL` | `10` | интервал тестовой тревоги в `/ws/events` при `PIPELINE=0`, с |
 | `PIPELINE` | `1` | `1`: реальные события, камеры обрабатываются детектором и правилами, события в базе `DB_PATH`; `0`: тестовые события в базе в памяти, тестовая тревога раз в `FIXTURE_WS_INTERVAL` с |
 | `DB_PATH` | `backend/data/events.sqlite3` | база событий при `PIPELINE=1`, путь от корня репозитория |
+| `LOG_LEVEL` | `INFO` | уровень логов в консоли: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `DETECTOR_BACKEND` | `onnx` | бэкенд детектора: `onnx` или `linq` |
 | `SOURCE_LOOP` | `1` | `0`: видеофайл и папка кадров не начинаются сначала после конца |
 
@@ -54,6 +55,38 @@ python scripts/check_pipeline.py
 ```bash
 python scripts/check_events.py
 ```
+
+## Скрипты
+
+### `run_offline.py`
+
+Прогон видео через детектор и правила без сервера, раздел 7 `CONTRACT.md`. Используется для метрик ML-7.
+
+```bash
+python scripts/run_offline.py --video PATH --camera ID --out PATH [--fps F] [--use-schedule]
+```
+
+| Аргумент | Значение |
+|---|---|
+| `--video` | видео `.mp4` или `.mov` |
+| `--camera` | камера из `configs/cameras.yaml`: зоны и правила |
+| `--out` | файл JSONL: одна строка на `Event` (`dataclasses.asdict`), по возрастанию `ts_confirm` |
+| `--fps` | частота обработки, по умолчанию `fps` камеры |
+| `--use-schedule` | учитывать `schedule` правил по текущему времени. Без флага расписание отключено, чтобы результат не зависел от времени запуска |
+
+- Поля `ts_*` в выводе считаются в секундах от начала видео.
+- События, открытые на последнем кадре, закрываются с `ts_end` последнего кадра.
+- Детектор выбирается переменной `DETECTOR_BACKEND`.
+- В stdout выводится итоговая строка: `<video>: <кадров> frames, <событий> events, <тип>=<число> ..., <секунд> s`.
+- Если камеры нет или видео не открывается, код возврата 2.
+
+### `smoke.py`
+
+```bash
+python scripts/smoke.py
+```
+
+Прогоняет `data/demo.mp4` через `run_offline` с камерой `cam1` на бэкенде `onnx`. Ожидается ровно одно событие `fall` и одно `danger_zone`, у обоих задан `ts_end`, у `fall` `ts_start` не меньше 3.0 с. При успехе печатает `smoke: ok` и возвращает код 0.
 
 ## Проверка
 
