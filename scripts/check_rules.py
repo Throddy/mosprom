@@ -110,7 +110,7 @@ def fall_lying():
     e = events[0]
     d = e.ts_confirm - e.ts_start
     expect(e.severity == "critical" and e.extra.get("pose") == "kpts", f"{e.severity} {e.extra}")
-    expect(3.0 - 1e-6 <= d <= 3.3 + 1e-6, f"ts_confirm - ts_start = {d:.2f}")
+    expect(1.5 - 1e-6 <= d <= 1.8 + 1e-6, f"ts_confirm - ts_start = {d:.2f}")
 
 
 def fall_crawl():
@@ -286,6 +286,53 @@ def run_zone():
     expect(len(inside.of("running")) == 1, f"inside {len(inside.of('running'))} events")
 
 
+def body(fx: float, fy: float, w: float, h: float, lying_t: float = 0.0) -> Detection:
+    """Человек с боксом w x h, точка ног (fx, fy). Плечи над бёдрами при lying_t = 0,
+    на одной высоте при lying_t = 1 (линейный переход)."""
+    x1, y1 = fx - w / 2, fy - h
+    cx, cy = fx, fy - h / 2
+    half = 0.2 * max(w, h)
+    # Вектор плечи -> бёдра поворачивается от вертикали к горизонтали
+    dx, dy = half * lying_t, half * (1 - lying_t)
+    kpts = _kpts({5: (cx - dx - 8, cy - dy), 6: (cx - dx + 8, cy - dy),
+                  11: (cx + dx - 8, cy + dy), 12: (cx + dx + 8, cy + dy)})
+    return Detection(cls="person", conf=0.9, bbox=(x1, y1, fx + w / 2, fy), kpts=kpts)
+
+
+def run_depth():
+    # Бег к камере: точка ног на месте, высота растёт со 150 до 300 px за 1 с и дальше в том же темпе
+    run = run_rule(3.0, lambda i: [body(640, 700, 60 + 6 * i, 150 + 15 * i)])
+    expect(len(run.of("running")) == 1, f"{len(run.of('running'))} events")
+
+
+def run_depth_fall():
+    # Стоит 1.5 с, за 1.2 с (12 кадров) плавно падает: высота 300 -> 100, ширина 100 -> 300,
+    # корпус почти ложится (0.95 горизонтали, ~87 град), лежит 2 с.
+    def make(i):
+        if i < 15:
+            return [body(640, 600, 100, 300)]
+        p = min((i - 15) / 12, 1.0)
+        return [body(640, 600, 100 + 200 * p, 300 - 200 * p, lying_t=0.95 * p)]
+
+    def run(params=None):
+        r = Run([RuleConfig(type="running", params=params or {})])
+        ids = set()
+        for i in range(round(4.7 / DT)):
+            result = r.engine.process(r.ts, W, H, make(i))
+            r.events += result.new_events
+            if 15 <= i <= 27:
+                ids.update(t.track_id for t in result.tracks)
+            r.ts = round(r.ts + DT, 6)
+        return r, ids
+
+    checked, ids = run()
+    expect(len(ids) == 1, f"track ids during fall {sorted(ids)}")
+    expect(len(checked.of("running")) == 0, f"{len(checked.of('running'))} events")
+    # Контроль: без проверки стойки то же падение даёт running, значит проверка стойки нагружена
+    control, _ = run({"upright_angle": 90.0, "upright_aspect": 0.0})
+    expect(len(control.of("running")) >= 1, f"control without upright check: {len(control.of('running'))} events")
+
+
 def registry4():
     types = sorted(r["type"] for r in describe())
     expect(types == ["danger_zone", "fall", "proximity", "running"], f"{types}")
@@ -310,6 +357,8 @@ if __name__ == "__main__":
     check("run_walk", run_walk)
     check("run_jitter", run_jitter)
     check("run_zone", run_zone)
+    check("run_depth", run_depth)
+    check("run_depth_fall", run_depth_fall)
     check("registry4", registry4)
     check("demo_fall", demo_fall)
     check("demo_no_running", demo_no_running)

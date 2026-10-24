@@ -121,6 +121,8 @@ class Pipeline:
                     log.exception("камера %s: ошибка движка правил", cam.cfg.id)
                     result = Result()
                 done = time.time()
+                # Время конца обработки кадра для замера задержки до тревоги (BE-10)
+                result.t_done = done
                 with cam.lock:
                     cam.frame = frame
                     cam.detections = detections
