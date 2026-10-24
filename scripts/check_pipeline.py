@@ -25,9 +25,9 @@ def main() -> int:
     frames = Counter()
     with_person = Counter()
 
-    def on_result(camera_id, ts, frame, detections):
+    def on_result(camera_id, ts, frame, result):
         frames[camera_id] += 1
-        if any(d.cls == "person" for d in detections):
+        if any(t.cls == "person" for t in result.tracks):
             with_person[camera_id] += 1
 
     pipeline = Pipeline(cameras, detector, on_result)
@@ -56,7 +56,7 @@ def main() -> int:
     if snap["frame"] is not None:
         info = f"cam1 fps {snap['fps']:.1f} lat {snap['latency_ms']:.0f} ms"
         OUT.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(OUT), draw(snap["frame"], snap["detections"], cam1.zones, info))
+        cv2.imwrite(str(OUT), draw(snap["frame"], snap["detections"], cam1.zones, info, snap["tracks"]))
     else:
         failed = True
 
