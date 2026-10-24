@@ -63,11 +63,21 @@ def trace(video: Path, camera_id: str, detector) -> None:
                 points = [b for t, b, _ in state.history if t >= ts - window]
                 v = speed(state, ts, window)
                 ratio = bbox_height(points[-1]) / bbox_height(points[0]) if len(points) > 1 else None
+                # Лодыжки 15 и 16: d = (y15 - y16) / h меняет знак на каждом шаге
+                k = state.kpts
+                ank = (k is not None and getattr(k, "shape", None) == (17, 3))
+                c15 = float(k[15, 2]) if ank else None
+                c16 = float(k[16, 2]) if ank else None
+                hb = bbox_height(state.bbox)
+                d = (float(k[15, 1]) - float(k[16, 1])) / hb if ank and hb > 0 else None
                 print(json.dumps({
                     "ts": round(ts, 1), "track_id": track.track_id,
-                    "foot": [round(fx / w, 3), round(fy / h, 3)], "h": round(bbox_height(state.bbox), 1),
+                    "foot": [round(fx / w, 3), round(fy / h, 3)], "h": round(hb, 1),
                     "v": None if v is None else round(v, 2),
                     "h_ratio": None if ratio is None else round(ratio, 2),
+                    "ankle_conf": None if c15 is None else [round(c15, 2), round(c16, 2)],
+                    "d": None if d is None else round(d, 3),
+                    "d_sign": None if d is None else (1 if d > 0 else -1 if d < 0 else 0),
                 }))
             n += 1
             next_pos += step
@@ -174,7 +184,8 @@ def main() -> int:
                 camera_id = "test_normal"
             if args.trace == "proximity" and camera_id == "test_proximity":
                 trace_proximity(Path(args.videos) / video, camera_id, detector)
-            elif args.trace and labels and labels[0]["type"] == args.trace:
+            elif args.trace == "running" and args.only or args.trace and labels and labels[0]["type"] == args.trace:
+                # С --only трассировка running печатается для любого видео, например для ходьбы
                 trace(Path(args.videos) / video, camera_id, detector)
             events, frames, _ = run_offline(str(Path(args.videos) / video), camera_id,
                                             str(Path(tmp) / f"{stem}.jsonl"), detector=detector)
