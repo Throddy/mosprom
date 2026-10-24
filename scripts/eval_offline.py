@@ -1,6 +1,6 @@
 """Прогон видео набора для настройки против разметки, для подбора порогов в BE-11.
 
-python scripts/eval_offline.py [--labels data/videos/test/labels.csv] [--videos data/videos/test] [--trace TYPE]
+python scripts/eval_offline.py [--labels data/videos/dev/labels.csv] [--videos data/videos/dev] [--trace TYPE]
     [--only VIDEO]
 
 Обходит все видео папки. Видео без строк в разметке — сцены без нарушений: любое событие на них ложное.
@@ -137,8 +137,8 @@ def trace_proximity(video: Path, camera_id: str, detector) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Прогон тестовых видео против разметки")
-    parser.add_argument("--labels", default="data/videos/test/labels.csv")
-    parser.add_argument("--videos", default="data/videos/test")
+    parser.add_argument("--labels", default="data/videos/dev/labels.csv")
+    parser.add_argument("--videos", default="data/videos/dev")
     parser.add_argument("--trace", metavar="TYPE",
                         help="покадровая трассировка: running — на видео этого типа, proximity — на камере test_proximity")
     parser.add_argument("--only", metavar="VIDEO", help="оценить одно видео из папки")
