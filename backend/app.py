@@ -10,7 +10,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -18,12 +18,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend import snapshots
-from backend.cameras import load_cameras
+from backend.cameras import cameras_path, load_active, save_cameras
 from backend.db import EventDB
 from backend.draw import draw
 from backend.fixtures import gray_frame, make_event, save_snapshot, seed_events
 from backend.hub import STATUSES, Hub, Store, to_json
 from backend.pipeline import Pipeline
+from backend.validation import sanitize, validate_camera
 from core.schemas import CameraConfig, Event, RuleConfig, Zone
 
 log = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ def encode_jpeg(img: np.ndarray) -> bytes:
 def create_app() -> FastAPI:
     use_pipeline = os.environ.get("PIPELINE", "1") == "1"
     db = EventDB(os.environ.get("DB_PATH") or DEFAULT_DB_PATH) if use_pipeline else EventDB(":memory:")
-    store = Store(load_cameras(), db)
+    store = Store(load_active(), db)
     hub = Hub()
     interval = float(os.environ.get("FIXTURE_WS_INTERVAL", "10"))
     detector_backend = os.environ.get("DETECTOR_BACKEND") or "onnx"
@@ -204,14 +205,30 @@ def create_app() -> FastAPI:
         return [to_json(c) for c in store.cameras.values()]
 
     @app.put("/api/cameras/{camera_id}")
-    def put_camera(camera_id: str, body: CameraIn):
-        if body.id != camera_id:
-            raise HTTPException(400, "id in path and body differ")
+    def put_camera(camera_id: str, body: dict = Body(...)):
         get_camera(camera_id)
-        store.cameras[camera_id] = body.to_config()
+        if body.get("id") != camera_id:
+            raise HTTPException(400, "id in path and body differ")
+        errors = validate_camera(body, {r["type"]: r for r in store.rule_specs()})
+        if errors:
+            log.warning("камера %s: PUT отклонён: %s", sanitize(camera_id), sanitize("; ".join(errors)))
+            raise HTTPException(422, "; ".join(errors))
+        try:
+            cfg = CameraIn(**body).to_config()
+        except ValueError as e:
+            raise HTTPException(422, sanitize(e))
+        old = store.cameras[camera_id]
+        store.cameras[camera_id] = cfg
+        try:
+            save_cameras(cameras_path(), list(store.cameras.values()))
+        except OSError as e:
+            store.cameras[camera_id] = old
+            log.error("камера %s: камеры не записаны: %s", camera_id, e)
+            raise HTTPException(500, "не удалось сохранить камеры")
         if state["pipeline"] is not None:
-            state["pipeline"].update_camera(store.cameras[camera_id])
-        return to_json(store.cameras[camera_id])
+            state["pipeline"].update_camera(cfg)
+        log.info("камера %s: изменения применены", camera_id)
+        return to_json(cfg)
 
     @app.get("/api/cameras/{camera_id}/frame")
     def frame(camera_id: str):
