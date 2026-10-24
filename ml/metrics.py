@@ -6,10 +6,18 @@ from pathlib import Path
 
 import cv2
 
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_LABELS = ROOT / "data/test_set/labels.csv"
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv"}
 
 Interval = tuple[float, float]
 Key = tuple[str, str]
+
+
+def repo_path(path: Path) -> str:
+    """Путь относительно корня репозитория, если файл лежит внутри него."""
+    resolved = path.resolve()
+    return str(resolved.relative_to(ROOT)) if resolved.is_relative_to(ROOT) else str(path)
 
 
 def video_duration(path: Path) -> float:
@@ -94,7 +102,7 @@ def evaluate(videos: list[Path], events_dir: Path, labels: dict[Key, list[Interv
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--labels", type=Path, required=True)
+    parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS)
     parser.add_argument("--videos", type=Path, required=True)
     parser.add_argument("--events", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
@@ -107,7 +115,7 @@ def main() -> None:
     counts, clean = evaluate(videos, args.events, load_labels(args.labels, types), types)
 
     rules = {t: rule_metrics(**c) for t, c in counts.items()}
-    args.out.write_text(json.dumps({"test_set": str(args.labels), "rules": rules},
+    args.out.write_text(json.dumps({"test_set": repo_path(args.labels), "rules": rules},
                                    ensure_ascii=False, indent=2) + "\n")
     for t, m in rules.items():
         print(f"{t}: tp {m['tp']}, fp {m['fp']}, fn {m['fn']}, "
