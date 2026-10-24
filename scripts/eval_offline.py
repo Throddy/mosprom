@@ -19,8 +19,22 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import run_offline as run_offline_module  # noqa: E402
 from backend.cameras import load_cameras  # noqa: E402
 from run_offline import TEST_CAMERAS, run_offline  # noqa: E402
+
+ENGINES = []
+
+
+class CountingEngine(run_offline_module.Engine):
+    """Engine прогона, сохраняется для чтения счётчиков подавленных повторов."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        ENGINES.append(self)
+
+
+run_offline_module.Engine = CountingEngine
 
 
 VIDEO_SUFFIXES = {".mov", ".MOV", ".mp4", ".MP4"}
@@ -171,6 +185,7 @@ def main() -> int:
     detector = create_detector()
     totals = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0, "delay": []})
     negatives = {"videos": 0, "seconds": 0.0, "events": defaultdict(int)}
+    suppressed = defaultdict(int)
     total_seconds = 0.0
     with tempfile.TemporaryDirectory() as tmp:
         for video in videos:
@@ -187,8 +202,14 @@ def main() -> int:
             elif args.trace == "running" and args.only or args.trace and labels and labels[0]["type"] == args.trace:
                 # С --only трассировка running печатается для любого видео, например для ходьбы
                 trace(Path(args.videos) / video, camera_id, detector)
+            ENGINES.clear()
             events, frames, _ = run_offline(str(Path(args.videos) / video), camera_id,
                                             str(Path(tmp) / f"{stem}.jsonl"), detector=detector)
+            video_suppressed = {}
+            for engine in ENGINES:
+                for rule_type, count in engine.suppressed_counts.items():
+                    video_suppressed[rule_type] = video_suppressed.get(rule_type, 0) + count
+                    suppressed[rule_type] += count
             fps = next(c.fps for c in load_cameras(TEST_CAMERAS) if c.id == camera_id)
             seconds = frames / fps
             total_seconds += seconds
@@ -222,7 +243,7 @@ def main() -> int:
                 "labels": [[float(lb["t_start"]), float(lb["t_end"])] for lb in labels],
                 "events": [{"type": e.type, "ts_start": round(e.ts_start, 2), "ts_confirm": round(e.ts_confirm, 2),
                             "ts_end": round(e.ts_end, 2), "extra": e.extra} for e in events],
-                "tp": tp, "fp": len(unmatched), "fn": fn,
+                "tp": tp, "fp": len(unmatched), "fn": fn, "suppressed": video_suppressed,
             }, ensure_ascii=False))
 
     print("итог по типам:")
@@ -231,6 +252,7 @@ def main() -> int:
                           "delay_s": t["delay"]}, ensure_ascii=False))
     print(json.dumps({"negatives": {"videos": negatives["videos"], "seconds": round(negatives["seconds"], 1),
                                     "events": dict(sorted(negatives["events"].items()))}}, ensure_ascii=False))
+    print(json.dumps({"suppressed": dict(sorted(suppressed.items()))}, ensure_ascii=False))
     hours = total_seconds / 3600
     fp_all = sum(t["fp"] for t in totals.values())
     print(json.dumps({"fp_per_hour": {

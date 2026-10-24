@@ -4,6 +4,10 @@
 одним и тем же обработчиком: её Engine вызывается только из него, кадры идут строго по порядку.
 Обработчик берёт последние кадры своих камер и вызывает infer одним списком.
 
+Камеры из TILED_CAMERAS обрабатывают отдельные TILED_WORKERS обработчиков с детекторами
+create_detector(<бэкенд>, tiles=True). Если бэкенд плитки не поддерживает (ValueError), эти камеры
+переходят к обычным обработчикам.
+
 Камера читает кадры с частотой показа max(fps камеры, STREAM_FPS): последний кадр идёт в /stream.
 Детектор получает кадр камеры не чаще fps камеры; правила и ts событий считаются только по этим кадрам.
 """
@@ -28,8 +32,28 @@ def stream_fps() -> float:
     return float(os.environ.get("STREAM_FPS", "15"))
 
 
+def _workers(name: str) -> int:
+    return max(1, int(os.environ.get(name, "1")))
+
+
 def detector_workers() -> int:
-    return max(1, int(os.environ.get("DETECTOR_WORKERS", "1")))
+    return _workers("DETECTOR_WORKERS")
+
+
+def tiled_workers() -> int:
+    return _workers("TILED_WORKERS")
+
+
+def tiled_cameras() -> list[str]:
+    """Точные id из TILED_CAMERAS: пробелы вокруг id убираются, повторы удаляются."""
+    ids = [x.strip() for x in os.environ.get("TILED_CAMERAS", "").split(",")]
+    return list(dict.fromkeys(x for x in ids if x))
+
+
+def _split(cams: list, n: int) -> list[list]:
+    """По кругу в порядке конфига; обработчиков не больше, чем камер, для пустого списка — ни одного."""
+    n = min(n, len(cams))
+    return [cams[i::n] for i in range(n)]
 
 
 class _Camera:
@@ -59,25 +83,65 @@ class _Camera:
 
 
 class Pipeline:
-    def __init__(self, cameras: list[CameraConfig], detector, on_result=None):
+    def __init__(self, cameras: list[CameraConfig], detector, on_result=None, factory=None):
         self.detector = detector
         self.on_result = on_result
+        # Фабрика детекторов create_detector(backend, tiles=...); подменяется в проверках
+        self.factory = factory
         self.cams = {c.id: _Camera(c) for c in cameras}
         self.stopped = threading.Event()
         self.detector_threads: list[threading.Thread] = []
+        self.workers: list[dict] = []  # {"name", "tiles", "cameras"} для лога и проверок
+
+    def _create(self, tiles: bool | None = None):
+        factory = self.factory
+        if factory is None:
+            from ml import create_detector as factory
+        backend = os.environ.get("DETECTOR_BACKEND", "onnx")
+        return factory(backend, tiles=True) if tiles else factory(backend)
+
+    def _tiled_detectors(self, tiled: list[_Camera]) -> list | None:
+        """Детекторы с плитками для групп tiled, созданные до запуска потоков. None — бэкенд их не поддерживает."""
+        detectors = []
+        for _ in _split(tiled, tiled_workers()):
+            try:
+                detectors.append(self._create(tiles=True))
+            except ValueError as e:
+                log.warning("плитки недоступны (%s): камеры %s обрабатываются без плиток", e,
+                            ", ".join(c.cfg.id for c in tiled))
+                return None
+        return detectors
 
     def start(self) -> None:
         self.stopped.clear()
+        wanted = tiled_cameras()
+        for camera_id in wanted:
+            if camera_id not in self.cams:
+                log.warning("TILED_CAMERAS: камеры %s нет, пропущена", camera_id)
+        tiled = [c for c in self.cams.values() if c.cfg.id in wanted]
+        tiled_detectors = self._tiled_detectors(tiled) if tiled else []
+        if tiled_detectors is None:
+            tiled, tiled_detectors = [], []
+        normal = [c for c in self.cams.values() if c not in tiled]
+
+        # (камеры, готовый детектор или None — создать в потоке, плитки)
+        plan = [(group, self.detector if i == 0 else None, False)
+                for i, group in enumerate(_split(normal, detector_workers()))]
+        plan += [(group, det, True) for group, det in zip(_split(tiled, tiled_workers()), tiled_detectors)]
+        if not plan:
+            plan = [([], self.detector, False)]
+
         for cam in self.cams.values():
             self._start_camera(cam)
-        # Обработчиков не больше, чем камер; камеры по кругу в порядке конфига
-        n = max(1, min(detector_workers(), len(self.cams)))
-        groups: list[list[_Camera]] = [[] for _ in range(n)]
-        for i, cam in enumerate(self.cams.values()):
-            groups[i % n].append(cam)
-        self.detector_threads = [
-            threading.Thread(target=self._detector_loop, args=(group, i == 0), name=f"detector-{i}", daemon=True)
-            for i, group in enumerate(groups)]
+        self.workers = []
+        self.detector_threads = []
+        for i, (group, detector, tiles) in enumerate(plan):
+            name = f"detector-{i}" + ("-tiles" if tiles else "")
+            self.workers.append({"name": name, "tiles": tiles, "cameras": [c.cfg.id for c in group]})
+            log.info("обработчик %s: камеры %s, плитки %s", name, ", ".join(c.cfg.id for c in group) or "-",
+                     "да" if tiles else "нет")
+            self.detector_threads.append(threading.Thread(
+                target=self._detector_loop, args=(group, detector), name=name, daemon=True))
         for t in self.detector_threads:
             t.start()
 
@@ -135,14 +199,12 @@ class Pipeline:
                 cam.online = False
             self.stopped.wait(REOPEN_DELAY)
 
-    def _detector_loop(self, cams: list[_Camera], first: bool) -> None:
-        detector = self.detector
-        if not first:
+    def _detector_loop(self, cams: list[_Camera], detector) -> None:
+        if detector is None:
             # Детектор может быть непотокобезопасным (CONTRACT.md, раздел 4): у обработчика свой экземпляр,
             # созданный в его потоке
             try:
-                from ml import create_detector
-                detector = create_detector(os.environ.get("DETECTOR_BACKEND", "onnx"))
+                detector = self._create()
             except Exception:
                 log.exception("обработчик %s: детектор не создан", threading.current_thread().name)
                 return
