@@ -1,5 +1,10 @@
-"""Пайплайн: поток на камеру и общий поток детектора, который берёт последний кадр каждой камеры."""
+"""Пайплайн: поток на камеру и общий поток детектора, который берёт последний кадр каждой камеры.
+
+Камера читает кадры с частотой показа max(fps камеры, STREAM_FPS): последний кадр идёт в /stream.
+Детектор получает кадр камеры не чаще fps камеры; правила и ts событий считаются только по этим кадрам.
+"""
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -15,11 +20,17 @@ FPS_WINDOW = 5.0
 LATENCY_WINDOW = 10
 
 
+def stream_fps() -> float:
+    return float(os.environ.get("STREAM_FPS", "15"))
+
+
 class _Camera:
     def __init__(self, cfg: CameraConfig):
         self.cfg = cfg
         self.lock = threading.Lock()
         self.slot = None  # (ts, frame), ещё не обработанный детектором
+        self.next_due = 0.0  # ts, с которого следующий кадр идёт детектору
+        self.display = None  # (ts, frame), последний прочитанный кадр для показа
         self.online = False
         self.frame = None
         self.detections = []
@@ -74,14 +85,20 @@ class Pipeline:
             cam.reopen.clear()
             source: FrameSource | None = None
             try:
-                source = cam.source = open_source(cam.cfg.source, cam.cfg.fps)
+                read_fps = max(cam.cfg.fps, stream_fps())
+                source = cam.source = open_source(cam.cfg.source, read_fps)
                 while not self.stopped.is_set() and not cam.reopen.is_set():
                     item = source.read()
                     if item is None:
                         break
                     with cam.lock:
-                        cam.slot = item
+                        cam.display = item
                         cam.online = True
+                        # Детектору — не чаще fps камеры: следующий срок сдвигается на период камеры
+                        period = 1.0 / cam.cfg.fps if cam.cfg.fps > 0 else 0.0
+                        if item[0] >= cam.next_due - 1e-6:
+                            cam.slot = item
+                            cam.next_due = max(cam.next_due + period, item[0] - period)
             except Exception:
                 log.exception("камера %s: ошибка источника", cam.cfg.id)
             finally:
@@ -152,6 +169,8 @@ class Pipeline:
                 "detections": cam.detections,
                 "tracks": cam.tracks,
                 "ts": cam.ts,
+                "display": cam.display[1] if cam.display else None,
+                "display_ts": cam.display[0] if cam.display else None,
             }
 
     def update_camera(self, cfg: CameraConfig) -> None:
