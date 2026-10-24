@@ -2,6 +2,7 @@ import type { Camera, RuleSpec, Status } from '../api/types.ts'
 import { useCatalog } from '../api/useCatalog.ts'
 import type { ServerStatus } from '../api/useServerStatus.ts'
 import { routeHref } from '../router.ts'
+import { CameraEditor } from './CameraEditor.tsx'
 import { CameraStream } from './CameraStream.tsx'
 
 interface Props {
@@ -10,6 +11,7 @@ interface Props {
 }
 
 type Live = Status['cameras'][number]
+type Tab = 'video' | 'zones'
 
 export function CamerasPage({ params, server }: Props) {
   const catalog = useCatalog()
@@ -17,6 +19,8 @@ export function CamerasPage({ params, server }: Props) {
   const live = (id: string) => status?.cameras.find((c) => c.id === id)
   const requested = params.get('id')
   const camera = catalog.cameras.find((c) => c.id === requested) ?? (requested ? undefined : catalog.cameras[0])
+  const tab: Tab = params.get('tab') === 'zones' ? 'zones' : 'video'
+  const href = (id: string, t: Tab) => routeHref('cameras', t === 'zones' ? { id, tab: t } : { id })
 
   return (
     <section className="cameras" aria-labelledby="cameras-title">
@@ -47,7 +51,7 @@ export function CamerasPage({ params, server }: Props) {
               const l = live(c.id)
               return (
                 <li key={c.id}>
-                  <a href={routeHref('cameras', { id: c.id })} aria-current={c.id === camera?.id ? 'true' : undefined}>
+                  <a href={href(c.id, tab)} aria-current={c.id === camera?.id ? 'true' : undefined}>
                     <span className="camera-name">
                       <OnlineDot live={l} />
                       {c.name}
@@ -62,13 +66,37 @@ export function CamerasPage({ params, server }: Props) {
           </ul>
 
           {camera ? (
-            <CameraView
-              key={camera.id}
-              camera={camera}
-              live={live(camera.id)}
-              rules={catalog.rules}
-              testMode={status?.backend === 'fixtures'}
-            />
+            <article className="camera-view" data-camera-id={camera.id}>
+              <div className="camera-head">
+                <h3>{camera.name}</h3>
+                <a href={routeHref('journal', { camera_id: camera.id })}>События камеры в журнале</a>
+              </div>
+              <nav className="segmented camera-tabs" aria-label="Раздел камеры">
+                <a href={href(camera.id, 'video')} aria-current={tab === 'video' ? 'page' : undefined}>
+                  Видео
+                </a>
+                <a href={href(camera.id, 'zones')} aria-current={tab === 'zones' ? 'page' : undefined}>
+                  Зоны и правила
+                </a>
+              </nav>
+              {tab === 'zones' ? (
+                <CameraEditor
+                  key={camera.id}
+                  camera={camera}
+                  specs={catalog.rules}
+                  specsError={catalog.error}
+                  onSaved={catalog.reload}
+                />
+              ) : (
+                <CameraView
+                  key={camera.id}
+                  camera={camera}
+                  live={live(camera.id)}
+                  rules={catalog.rules}
+                  testMode={status?.backend === 'fixtures'}
+                />
+              )}
+            </article>
           ) : (
             <p className="feed-empty muted">
               Камера <code>{requested}</code> не найдена в GET /api/cameras
@@ -89,12 +117,7 @@ function CameraView({ camera, live, rules, testMode }: { camera: Camera; live: L
   const zoneName = (id: string | null) => (id ? (camera.zones.find((z) => z.id === id)?.name ?? id) : null)
 
   return (
-    <article className="camera-view" data-camera-id={camera.id}>
-      <div className="camera-head">
-        <h3>{camera.name}</h3>
-        <a href={routeHref('journal', { camera_id: camera.id })}>События камеры в журнале</a>
-      </div>
-
+    <>
       <CameraStream cameraId={camera.id} cameraName={camera.name} testMode={testMode} />
 
       <dl className="details-meta">
@@ -157,6 +180,6 @@ function CameraView({ camera, live, rules, testMode }: { camera: Camera; live: L
           })}
         </ul>
       )}
-    </article>
+    </>
   )
 }
