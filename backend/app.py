@@ -131,6 +131,9 @@ def create_app() -> FastAPI:
             # Сначала событие в базу и в WebSocket, снимок после: без снимка тревога не теряется.
             try:
                 send("event_new", store.add_event(event, snapshots.snapshot_path(camera_id, event.id)))
+                # От получения кадра до передачи event_new в цикл событий сервера
+                log.info("alarm latency: camera %s type %s frame_to_ws_ms %.1f", camera_id, event.type,
+                         (time.time() - ts) * 1000.0)
                 log.info("event new: camera %s type %s track %s ts_confirm %.2f", camera_id, event.type,
                          event.track_id, event.ts_confirm)
             except Exception:

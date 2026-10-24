@@ -51,10 +51,10 @@ class FallRule(Rule):
     severity = "critical"
     needs_zone = False
     params = [
-        {"name": "min_duration", "type": "float", "unit": "с", "default": 3.0},
+        {"name": "min_duration", "type": "float", "unit": "с", "default": 1.5},
         {"name": "angle", "type": "float", "unit": "град", "default": 60.0},
         {"name": "aspect", "type": "float", "unit": "ширина/высота", "default": 1.2},
-        {"name": "still_window", "type": "float", "unit": "с", "default": 2.0},
+        {"name": "still_window", "type": "float", "unit": "с", "default": 1.5},
         {"name": "still_tol", "type": "float", "unit": "длина тела", "default": 0.3},
     ]
 
