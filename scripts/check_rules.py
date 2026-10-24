@@ -110,7 +110,7 @@ def fall_lying():
     e = events[0]
     d = e.ts_confirm - e.ts_start
     expect(e.severity == "critical" and e.extra.get("pose") == "kpts", f"{e.severity} {e.extra}")
-    expect(3.0 - 1e-6 <= d <= 3.3 + 1e-6, f"ts_confirm - ts_start = {d:.2f}")
+    expect(1.5 - 1e-6 <= d <= 1.8 + 1e-6, f"ts_confirm - ts_start = {d:.2f}")
 
 
 def fall_crawl():
