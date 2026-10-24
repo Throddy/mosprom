@@ -105,10 +105,11 @@ class Event:
 
 ```python
 # ml/__init__.py
-def create_detector(backend: str | None = None) -> Detector: ...
+def create_detector(backend: str | None = None, tiles: bool | None = None) -> Detector: ...
 ```
 
 - `backend`: `"onnx"` (ONNX Runtime на CPU) или `"linq"` (LinQ TPU). При `None` значение берётся из переменной `DETECTOR_BACKEND`, по умолчанию `"onnx"`.
+- `tiles`: `None` — значение из `configs/models.yaml` (по умолчанию выключено); `True` — второй проход модели pose по плиткам 3×2 на кадрах, где все люди мелкие. Нужен для камер общего плана: время кадра на общем плане растёт в 3,4 раза.
 - Вход `infer()`: кадры BGR, `uint8`, форма `(H, W, 3)`, как отдаёт `cv2`. Размеры кадров могут различаться.
 - Выход: список той же длины, что вход. Элемент `i` содержит детекции кадра `i`.
 - Координаты `bbox` и `kpts` даны в пикселях исходного кадра. Letterbox, NMS и порог `conf` выполняет ML. Пороги хранятся в `configs/models.yaml`.
