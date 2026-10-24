@@ -1,6 +1,9 @@
 """Прогон видео набора для настройки против разметки, для подбора порогов в BE-11.
 
-python scripts/eval_offline.py [--labels data/videos/test/labels.csv] [--videos data/videos/test] [--trace TYPE]
+python scripts/eval_offline.py [--labels data/videos/dev/labels.csv] [--videos data/videos/dev] [--trace TYPE]
+    [--only VIDEO]
+
+Обходит все видео папки. Видео без строк в разметке — сцены без нарушений: любое событие на них ложное.
 
 Официальные метрики считает ML-7 на контрольном наборе, этот скрипт их не заменяет.
 """
@@ -18,6 +21,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from backend.cameras import load_cameras  # noqa: E402
 from run_offline import TEST_CAMERAS, run_offline  # noqa: E402
+
+
+VIDEO_SUFFIXES = {".mov", ".MOV", ".mp4", ".MP4"}
 
 
 def overlaps(event, t_start: float, t_end: float) -> bool:
@@ -69,11 +75,73 @@ def trace(video: Path, camera_id: str, detector) -> None:
     cap.release()
 
 
+def trace_proximity(video: Path, camera_id: str, detector) -> None:
+    """Покадрово: люди (track_id, точка ног в долях кадра, высота бокса), техника (cls, track_id, бокс)
+    и минимальное расстояние d_norm от точки ног до бокса техники в ростах человека. В конце сводка."""
+    import cv2
+
+    from logic import Engine
+    from logic.geometry import bbox_height, foot_point
+    from logic.rules.proximity import VEHICLES, point_to_box
+
+    camera = next(c for c in load_cameras(TEST_CAMERAS) if c.id == camera_id)
+    engine = Engine(camera)
+    cap = cv2.VideoCapture(str(video))
+    step = (cap.get(cv2.CAP_PROP_FPS) or 25.0) / camera.fps
+    index, n, next_pos = 0, 0, 0.0
+    frames_with = defaultdict(int)
+    best = None  # (d_norm, ts)
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if index >= next_pos:
+            ts = n / camera.fps
+            h, w = frame.shape[:2]
+            result = engine.process(ts, w, h, detector.infer([frame])[0])
+            people = [t for t in result.tracks if t.cls == "person"]
+            vehicles = [t for t in result.tracks if t.cls in VEHICLES]
+            for cls in {v.cls for v in vehicles}:
+                frames_with[cls] += 1
+            if vehicles:
+                frames_with["any"] += 1
+            d_min = None
+            for p in people:
+                ph = bbox_height(p.bbox)
+                if ph <= 0:
+                    continue
+                fx, fy = foot_point(p.bbox)
+                for v in vehicles:
+                    d = point_to_box(fx, fy, v.bbox) / ph
+                    d_min = d if d_min is None else min(d_min, d)
+            if d_min is not None and (best is None or d_min < best[0]):
+                best = (d_min, ts)
+            print(json.dumps({
+                "ts": round(ts, 1),
+                "people": [{"track_id": p.track_id, "foot": [round(foot_point(p.bbox)[0] / w, 3),
+                                                             round(foot_point(p.bbox)[1] / h, 3)],
+                            "h": round(bbox_height(p.bbox), 1)} for p in people],
+                "vehicles": [{"cls": v.cls, "track_id": v.track_id, "bbox": [round(x) for x in v.bbox]}
+                             for v in vehicles],
+                "d_norm_min": None if d_min is None else round(d_min, 2),
+            }))
+            n += 1
+            next_pos += step
+        index += 1
+    cap.release()
+    share = {cls: round(cnt / n, 2) for cls, cnt in sorted(frames_with.items())} if n else {}
+    print(json.dumps({"trace_proximity": video.name, "frames": n, "share_with_vehicle": share,
+                      "d_norm_min": None if best is None else round(best[0], 2),
+                      "d_norm_min_ts": None if best is None else round(best[1], 1)}, ensure_ascii=False))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Прогон тестовых видео против разметки")
-    parser.add_argument("--labels", default="data/videos/test/labels.csv")
-    parser.add_argument("--videos", default="data/videos/test")
-    parser.add_argument("--trace", metavar="TYPE", help="покадровая трассировка person на видео этого типа")
+    parser.add_argument("--labels", default="data/videos/dev/labels.csv")
+    parser.add_argument("--videos", default="data/videos/dev")
+    parser.add_argument("--trace", metavar="TYPE",
+                        help="покадровая трассировка: running — на видео этого типа, proximity — на камере test_proximity")
+    parser.add_argument("--only", metavar="VIDEO", help="оценить одно видео из папки")
     args = parser.parse_args()
 
     test_ids = {c.id for c in load_cameras(TEST_CAMERAS)}
@@ -82,18 +150,42 @@ def main() -> int:
     by_video: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         by_video[row["video"]].append(row)
+    videos = sorted(p.name for p in Path(args.videos).iterdir() if p.suffix in VIDEO_SUFFIXES)
+    if args.only:
+        videos = [v for v in videos if v == args.only]
+        if not videos:
+            print(f"eval_offline: видео {args.only} нет в {args.videos}", file=sys.stderr)
+            return 2
 
     from ml import create_detector
     detector = create_detector()
     totals = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0, "delay": []})
+    negatives = {"videos": 0, "seconds": 0.0, "events": defaultdict(int)}
+    total_seconds = 0.0
     with tempfile.TemporaryDirectory() as tmp:
-        for video, labels in by_video.items():
+        for video in videos:
+            labels = by_video.get(video, [])
             stem = Path(video).stem
-            camera_id = f"test_{stem}" if f"test_{stem}" in test_ids else f"test_{labels[0]['type']}"
-            if args.trace and labels[0]["type"] == args.trace:
+            if f"test_{stem}" in test_ids:
+                camera_id = f"test_{stem}"
+            elif labels:
+                camera_id = f"test_{labels[0]['type']}"
+            else:
+                camera_id = "test_normal"
+            if args.trace == "proximity" and camera_id == "test_proximity":
+                trace_proximity(Path(args.videos) / video, camera_id, detector)
+            elif args.trace and labels and labels[0]["type"] == args.trace:
                 trace(Path(args.videos) / video, camera_id, detector)
-            events, _, _ = run_offline(str(Path(args.videos) / video), camera_id, str(Path(tmp) / f"{stem}.jsonl"),
-                                       detector=detector)
+            events, frames, _ = run_offline(str(Path(args.videos) / video), camera_id,
+                                            str(Path(tmp) / f"{stem}.jsonl"), detector=detector)
+            fps = next(c.fps for c in load_cameras(TEST_CAMERAS) if c.id == camera_id)
+            seconds = frames / fps
+            total_seconds += seconds
+            if not labels:
+                negatives["videos"] += 1
+                negatives["seconds"] += seconds
+                for e in events:
+                    negatives["events"][e.type] += 1
             matched = set()
             tp = fn = 0
             for label in labels:
@@ -114,7 +206,8 @@ def main() -> int:
             print(json.dumps({
                 "video": video,
                 "camera": camera_id,
-                "type": labels[0]["type"],
+                "type": labels[0]["type"] if labels else None,
+                "seconds": round(seconds, 1),
                 "labels": [[float(lb["t_start"]), float(lb["t_end"])] for lb in labels],
                 "events": [{"type": e.type, "ts_start": round(e.ts_start, 2), "ts_confirm": round(e.ts_confirm, 2),
                             "ts_end": round(e.ts_end, 2), "extra": e.extra} for e in events],
@@ -125,6 +218,15 @@ def main() -> int:
     for rule_type, t in sorted(totals.items()):
         print(json.dumps({"type": rule_type, "tp": t["tp"], "fp": t["fp"], "fn": t["fn"],
                           "delay_s": t["delay"]}, ensure_ascii=False))
+    print(json.dumps({"negatives": {"videos": negatives["videos"], "seconds": round(negatives["seconds"], 1),
+                                    "events": dict(sorted(negatives["events"].items()))}}, ensure_ascii=False))
+    hours = total_seconds / 3600
+    fp_all = sum(t["fp"] for t in totals.values())
+    print(json.dumps({"fp_per_hour": {
+        "seconds": round(total_seconds, 1),
+        "all": round(fp_all / hours, 1) if hours else None,
+        **{rule_type: round(t["fp"] / hours, 1) for rule_type, t in sorted(totals.items())},
+    }}, ensure_ascii=False))
     return 0
 
 
