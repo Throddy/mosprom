@@ -7,6 +7,8 @@ ROOT = Path(__file__).resolve().parent.parent
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MAX_NAME = 100
 MAX_POINTS = 50
+MAX_ZONES = 20
+MAX_RULES = 20
 MAX_PARAM = 1000.0
 
 
@@ -42,19 +44,26 @@ def _check_zones(zones, errors: list[str]) -> set[str]:
     if not isinstance(zones, list):
         errors.append("zones: нужен список")
         return ids
+    if len(zones) > MAX_ZONES:
+        errors.append(f"zones: не больше {MAX_ZONES} зон")
+        return ids
     for i, z in enumerate(zones):
         if not isinstance(z, dict):
             errors.append(f"zones[{i}]: нужен объект")
             continue
         zid = z.get("id")
-        if not _nonempty(zid):
+        if not isinstance(zid, str):
+            errors.append(f"zones[{i}].id: должен быть строкой")
+        elif not _nonempty(zid):
             errors.append(f"zones[{i}].id: нужна непустая строка")
         elif zid in ids:
             errors.append(f"zones[{i}].id: {sanitize(zid)} повторяется")
         else:
             ids.add(zid)
         name = z.get("name")
-        if not isinstance(name, str) or len(name) > MAX_NAME:
+        if not isinstance(name, str):
+            errors.append(f"zones[{i}].name: должен быть строкой")
+        elif len(name) > MAX_NAME:
             errors.append(f"zones[{i}].name: строка до {MAX_NAME} символов")
         polygon = z.get("polygon")
         if not isinstance(polygon, list) or not 3 <= len(polygon) <= MAX_POINTS:
@@ -71,12 +80,19 @@ def _check_rule(i: int, rule, zone_ids: set[str], specs: dict[str, dict], errors
     if not isinstance(rule, dict):
         errors.append(f"rules[{i}]: нужен объект")
         return
-    spec = specs.get(rule.get("type"))
+    # Тип проверяется до поиска в словарях: список или объект как ключ дал бы исключение и 500
+    rule_type = rule.get("type")
+    if not isinstance(rule_type, str):
+        errors.append(f"rules[{i}].type: должен быть строкой")
+        return
+    spec = specs.get(rule_type)
     if spec is None:
-        errors.append(f"rules[{i}].type: неизвестное правило {sanitize(rule.get('type'))}")
+        errors.append(f"rules[{i}].type: неизвестное правило {sanitize(rule_type)}")
         return
     zone = rule.get("zone")
-    if spec.get("needs_zone") and zone is None:
+    if zone is not None and not isinstance(zone, str):
+        errors.append(f"rules[{i}].zone: должен быть строкой")
+    elif spec.get("needs_zone") and zone is None:
         errors.append(f"rules[{i}].zone: правилу {spec['type']} нужна зона")
     elif zone is not None and zone not in zone_ids:
         errors.append(f"rules[{i}].zone: зоны {sanitize(zone)} нет у камеры")
@@ -85,9 +101,11 @@ def _check_rule(i: int, rule, zone_ids: set[str], specs: dict[str, dict], errors
         if not isinstance(schedule, (list, tuple)) or len(schedule) != 2 \
                 or not all(isinstance(t, str) and TIME_RE.match(t) for t in schedule):
             errors.append(f"rules[{i}].schedule: null или две строки HH:MM")
-    params = rule.get("params") or {}
+    params = rule.get("params")
+    if params is None:
+        params = {}
     if not isinstance(params, dict):
-        errors.append(f"rules[{i}].params: нужен объект")
+        errors.append(f"rules[{i}].params: должен быть объектом")
         return
     known = {p["name"] for p in spec.get("params", [])}
     for name, value in params.items():
@@ -115,6 +133,8 @@ def validate_camera(cam: dict, rules: dict[str, dict]) -> list[str]:
     rule_list = cam.get("rules", [])
     if not isinstance(rule_list, list):
         errors.append("rules: нужен список")
+    elif len(rule_list) > MAX_RULES:
+        errors.append(f"rules: не больше {MAX_RULES} правил")
     else:
         for i, rule in enumerate(rule_list):
             _check_rule(i, rule, zone_ids, rules, errors)

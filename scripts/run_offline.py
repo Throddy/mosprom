@@ -19,6 +19,9 @@ from backend.cameras import load_cameras  # noqa: E402
 from core.schemas import Event  # noqa: E402
 from logic import Engine  # noqa: E402
 
+# Камеры тестовых видео: сервер их не читает, run_offline ищет камеру здесь, если её нет в cameras.yaml
+TEST_CAMERAS = ROOT / "configs" / "cameras.test.yaml"
+
 
 class OfflineError(Exception):
     pass
@@ -28,8 +31,10 @@ def run_offline(video: str, camera_id: str, out: str, fps: float | None = None,
                 use_schedule: bool = False, detector=None) -> tuple[list[Event], int, float]:
     """Возвращает события (ts_* в секундах от начала видео), число обработанных кадров и время работы."""
     cameras = {c.id: c for c in load_cameras()}
+    if camera_id not in cameras and TEST_CAMERAS.exists():
+        cameras.update({c.id: c for c in load_cameras(TEST_CAMERAS)})
     if camera_id not in cameras:
-        raise OfflineError(f"камера {camera_id} не найдена в configs/cameras.yaml")
+        raise OfflineError(f"камера {camera_id} не найдена в configs/cameras.yaml и configs/cameras.test.yaml")
     camera = cameras[camera_id]
     if not use_schedule:
         camera = dataclasses.replace(camera, rules=[dataclasses.replace(r, schedule=None) for r in camera.rules])

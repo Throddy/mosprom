@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -98,6 +99,7 @@ def create_app() -> FastAPI:
     db = EventDB(os.environ.get("DB_PATH") or DEFAULT_DB_PATH) if use_pipeline else EventDB(":memory:")
     store = Store(load_active(), db)
     hub = Hub()
+    cameras_lock = threading.Lock()
     interval = float(os.environ.get("FIXTURE_WS_INTERVAL", "10"))
     detector_backend = os.environ.get("DETECTOR_BACKEND") or "onnx"
     state = {"detector": None, "pipeline": None, "loop": None}
@@ -206,29 +208,31 @@ def create_app() -> FastAPI:
 
     @app.put("/api/cameras/{camera_id}")
     def put_camera(camera_id: str, body: dict = Body(...)):
-        get_camera(camera_id)
-        if body.get("id") != camera_id:
-            raise HTTPException(400, "id in path and body differ")
-        errors = validate_camera(body, {r["type"]: r for r in store.rule_specs()})
-        if errors:
-            log.warning("камера %s: PUT отклонён: %s", sanitize(camera_id), sanitize("; ".join(errors)))
-            raise HTTPException(422, "; ".join(errors))
-        try:
-            cfg = CameraIn(**body).to_config()
-        except ValueError as e:
-            raise HTTPException(422, sanitize(e))
-        old = store.cameras[camera_id]
-        store.cameras[camera_id] = cfg
-        try:
-            save_cameras(cameras_path(), list(store.cameras.values()))
-        except OSError as e:
-            store.cameras[camera_id] = old
-            log.error("камера %s: камеры не записаны: %s", camera_id, e)
-            raise HTTPException(500, "не удалось сохранить камеры")
-        if state["pipeline"] is not None:
-            state["pipeline"].update_camera(cfg)
-        log.info("камера %s: изменения применены", camera_id)
-        return to_json(cfg)
+        # Чтение, изменение и запись камер под одной блокировкой: одновременные PUT не теряют изменения
+        with cameras_lock:
+            get_camera(camera_id)
+            if body.get("id") != camera_id:
+                raise HTTPException(400, "id in path and body differ")
+            errors = validate_camera(body, {r["type"]: r for r in store.rule_specs()})
+            if errors:
+                log.warning("камера %s: PUT отклонён: %s", sanitize(camera_id), sanitize("; ".join(errors)))
+                raise HTTPException(422, "; ".join(errors))
+            try:
+                cfg = CameraIn(**body).to_config()
+            except ValueError as e:
+                raise HTTPException(422, sanitize(e))
+            old = store.cameras[camera_id]
+            store.cameras[camera_id] = cfg
+            try:
+                save_cameras(cameras_path(), list(store.cameras.values()))
+            except Exception as e:
+                store.cameras[camera_id] = old
+                log.error("камера %s: камеры не записаны: %s", camera_id, sanitize(e))
+                raise HTTPException(500, "не удалось сохранить камеры")
+            if state["pipeline"] is not None:
+                state["pipeline"].update_camera(cfg)
+            log.info("камера %s: изменения применены", camera_id)
+            return to_json(cfg)
 
     @app.get("/api/cameras/{camera_id}/frame")
     def frame(camera_id: str):

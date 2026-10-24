@@ -103,6 +103,10 @@ def part_a() -> None:
             "min_duration -1": with_rule(params={"min_duration": -1}),
             "unknown param": with_rule(params={"nope": 1.0}),
             "duplicate zone id": duplicate_zone,
+            "type list": with_rule(type=["danger_zone"]),
+            "zone number": with_rule(zone=1),
+            "params list": with_rule(params=[1.0]),
+            "21 zones": lambda x: x.update(zones=[{**x["zones"][0], "id": f"z{n}"} for n in range(21)]),
         }
         expect(cam["rules"][0]["type"] == "danger_zone" and cam["rules"][0]["zone"] == zone_id,
                "cam1 rules[0] must be danger_zone with zone")
