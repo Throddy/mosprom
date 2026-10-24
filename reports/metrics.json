@@ -1,6 +1,13 @@
 {
   "test_set": "data/videos/test/labels.csv",
   "rules": {
+    "danger_zone": {
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
     "fall": {
       "tp": 1,
       "fp": 0,
