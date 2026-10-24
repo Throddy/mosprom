@@ -14,6 +14,7 @@ from tpu_pycloud_format import (MESSAGE_ID_ATTR_NAME, RESPONSE_ROUTING_KEYS_ATTR
 
 from core.schemas import Detection
 from ml.crops import add_tile_persons
+from ml.hands import add_hand_phones
 from ml.prepost import IOU, postprocess_det, postprocess_pose, preprocess
 
 # Конвенции облака LinQ: notebooks/linq.md, раздел «Вызов через API».
@@ -40,6 +41,7 @@ class LinqDetector:
         self._det_classes = det_cfg["classes"]
         self._class_conf = det_cfg.get("class_conf", {})
         self._tiles = pose_cfg.get("tiles")
+        self._phone_crop = det_cfg.get("phone_crop")
         self._params = pika.ConnectionParameters(
             host=_env("LINQ_AMQP_HOST"), port=int(_env("LINQ_AMQP_PORT")),
             credentials=pika.PlainCredentials(_env("LINQ_AMQP_USER"), _env("LINQ_AMQP_PASSWORD")))
@@ -62,7 +64,7 @@ class LinqDetector:
         ]
         post_done = time.perf_counter()
         timing = {"pre": 0.0, "infer": 0.0, "post": 0.0}
-        detections = [self._with_tiles(image, found, timing)
+        detections = [self._with_crops(image, found, timing)
                       for image, found in zip(images, detections)]
         self.last_timing = {
             "pre": (pre_done - started) * 1000 + timing["pre"],
@@ -71,25 +73,42 @@ class LinqDetector:
         }
         return detections
 
-    def _with_tiles(self, image: np.ndarray, found: list[Detection],
+    def _with_crops(self, image: np.ndarray, found: list[Detection],
                     timing: dict[str, float]) -> list[Detection]:
         persons = [d for d in found if d.cls == "person"]
-        others = [d for d in found if d.cls != "person"]
-        model = partial(self._pose_on_crops, timing=timing)
-        return add_tile_persons(image, persons, model, self._tiles) + others
+        objects = [d for d in found if d.cls != "person"]
+        persons = add_tile_persons(image, persons, partial(self._pose_on_crops, timing=timing),
+                                   self._tiles)
+        objects = add_hand_phones(image, persons, objects,
+                                  partial(self._det_on_crops, timing=timing), self._phone_crop,
+                                  self._class_conf.get("phone", self._det_conf))
+        return persons + objects
 
     def _pose_on_crops(self, crops: list[np.ndarray],
                        timing: dict[str, float]) -> list[list[Detection]]:
+        def decode(output: dict, meta: tuple[float, int, int],
+                   size: tuple[int, int]) -> list[Detection]:
+            return postprocess_pose(_run_tail(self._pose_tail, output), meta, size,
+                                    self._pose_conf, IOU)
+        return self._on_crops(crops, self._pose_uri, decode, timing)
+
+    def _det_on_crops(self, crops: list[np.ndarray],
+                      timing: dict[str, float]) -> list[list[Detection]]:
+        def decode(output: dict, meta: tuple[float, int, int],
+                   size: tuple[int, int]) -> list[Detection]:
+            return postprocess_det(_run_tail(self._det_tail, output), meta, size, self._det_conf,
+                                   IOU, self._det_classes, self._class_conf)
+        return self._on_crops(crops, self._det_uri, decode, timing)
+
+    def _on_crops(self, crops: list[np.ndarray], uri: str, decode,
+                  timing: dict[str, float]) -> list[list[Detection]]:
         started = time.perf_counter()
         prepared = [preprocess(crop) for crop in crops]
         pre_done = time.perf_counter()
-        outputs = self._call([(self._pose_uri, tensor) for tensor, _ in prepared])
+        outputs = self._call([(uri, tensor) for tensor, _ in prepared])
         infer_done = time.perf_counter()
-        found = [
-            postprocess_pose(_run_tail(self._pose_tail, output), meta,
-                             (crop.shape[1], crop.shape[0]), self._pose_conf, IOU)
-            for crop, (_, meta), output in zip(crops, prepared, outputs)
-        ]
+        found = [decode(output, meta, (crop.shape[1], crop.shape[0]))
+                 for crop, (_, meta), output in zip(crops, prepared, outputs)]
         timing["pre"] += (pre_done - started) * 1000
         timing["infer"] += (infer_done - pre_done) * 1000
         timing["post"] += (time.perf_counter() - infer_done) * 1000
