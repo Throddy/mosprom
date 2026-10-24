@@ -82,4 +82,5 @@ data/videos/
 *.pt2
 *.ovpn
 *.npy
+.DS_Store
 ```

@@ -44,14 +44,45 @@ python -m backend
 | `id`, `name` | непустые строки, `name` до 100 символов |
 | `fps` | число, `0 < fps <= 30` |
 | `source` | `rtsp://...` или относительный путь внутри `data/` без `..`, файл или папка существует |
-| `zones` | `id` непустые и уникальные, `name` до 100 символов, `polygon` от 3 до 50 точек, координаты — конечные числа от 0 до 1 |
-| `rules[].type` | правило есть в реестре (`GET /api/rules`) |
-| `rules[].zone` | у правила с `needs_zone` зона задана и есть в `zones`; заданная зона у других правил тоже должна быть в `zones` |
+| `zones` | не больше 20 зон; `id` — непустые уникальные строки, `name` — строка до 100 символов, `polygon` от 3 до 50 точек, координаты — конечные числа от 0 до 1 |
+| `rules` | не больше 20 правил |
+| `rules[].type` | строка, правило есть в реестре (`GET /api/rules`) |
+| `rules[].zone` | `null` или строка; у правила с `needs_zone` зона задана и есть в `zones`; заданная зона у других правил тоже должна быть в `zones` |
 | `rules[].schedule` | `null` или две строки `HH:MM`, часы 0–23, минуты 0–59 |
-| `rules[].params` | только параметры из описания правила, значения — конечные числа от 0 до 1000 |
+| `rules[].params` | объект; только параметры из описания правила, значения — конечные числа от 0 до 1000 |
+
+Значение не того типа даёт 422, а не 500. Чтение, изменение и запись камер в `PUT` выполняются под одной блокировкой, поэтому одновременные `PUT` не теряют изменений.
 
 ```bash
 python scripts/check_cameras.py
+```
+
+## Тестовые видео
+
+Набор для подбора порогов: `data/videos/test/` (видео и `labels.csv`, вне git). Камеры для этих видео описаны в `configs/cameras.test.yaml`. Сервер этот файл не читает, его используют только `run_offline.py` и `eval_offline.py`.
+
+| `id` | Видео | Правила |
+|---|---|---|
+| `test_fall` | `fall.mov` | `fall` |
+| `test_running` | `running.mov` | `running` |
+| `test_danger_zone` | `danger_zone.mov` | `danger_zone`, зона `tape` по скотчу на полу |
+
+`run_offline.py` ищет камеру в `configs/cameras.yaml`, а если её там нет, в `configs/cameras.test.yaml`:
+
+```bash
+python scripts/run_offline.py --video data/videos/test/fall.mov --camera test_fall --out /tmp/fall.jsonl
+```
+
+Прогон всего набора против `labels.csv`: по каждому видео события, `tp`, `fp`, `fn`, в конце итог по типам и задержка тревоги `ts_confirm - t_start`. Официальные метрики считает ML-7 на контрольном наборе.
+
+```bash
+python scripts/eval_offline.py [--labels data/videos/test/labels.csv] [--videos data/videos/test]
+```
+
+Кадр видео для разметки зоны:
+
+```bash
+python scripts/extract_frame.py --video data/videos/test/danger_zone.mov --t 1 --out backend/media/frames/danger_zone_t1.jpg
 ```
 
 ## Пайплайн

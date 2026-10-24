@@ -1,0 +1,26 @@
+# Камеры тестовых видео для run_offline.py и eval_offline.py. Сервер этот файл не читает.
+cameras:
+  - id: test_fall
+    name: "Тест: падение"
+    source: data/videos/test/fall.mov
+    fps: 10
+    zones: []
+    rules:
+      - {type: fall, enabled: true}
+  - id: test_running
+    name: "Тест: бег"
+    source: data/videos/test/running.mov
+    fps: 10
+    zones: []
+    rules:
+      - {type: running, enabled: true}
+  - id: test_danger_zone
+    name: "Тест: опасная зона"
+    source: data/videos/test/danger_zone.mov
+    fps: 10
+    zones:
+      - id: tape
+        name: Зона по скотчу
+        polygon: [[0.13, 0.97], [0.36, 0.82], [0.28, 0.73], [0.15, 0.69], [0.05, 0.69], [0.05, 1.0]]
+    rules:
+      - {type: danger_zone, enabled: true, zone: tape}
