@@ -57,14 +57,14 @@ def lying(fx: float, fy: float, with_kpts: bool = True) -> Detection:
     return Detection(cls="person", conf=0.9, bbox=(x1, y1, fx + 120, fy), kpts=kpts if with_kpts else None)
 
 
-def camera(rules=None) -> CameraConfig:
+def camera(rules=None, zones=None) -> CameraConfig:
     rules = rules or [RuleConfig(type="danger_zone", zone="z1"), RuleConfig(type="fall")]
-    return CameraConfig(id="test", name="test", source="", fps=10, zones=[ZONE], rules=rules)
+    return CameraConfig(id="test", name="test", source="", fps=10, zones=zones or [ZONE], rules=rules)
 
 
 class Run:
-    def __init__(self, rules=None):
-        self.engine = Engine(camera(rules))
+    def __init__(self, rules=None, zones=None):
+        self.engine = Engine(camera(rules, zones))
         self.ts = 0.0
         self.events = []
 
@@ -146,13 +146,33 @@ def broken_rule():
 
 
 def demo_fall():
+    events = demo_events("cam1")
+    falls = [e for e in events if e.type == "fall"]
+    expect(len(falls) == 1, f"{len(falls)} fall events")
+    expect(falls[0].ts_start >= 3.0, f"ts_start {falls[0].ts_start}")
+
+
+def demo_no_running():
+    events = demo_events("cam2")
+    running = [e for e in events if e.type == "running"]
+    falls = [e for e in events if e.type == "fall"]
+    expect(not running and len(falls) == 1, f"running {len(running)}, fall {len(falls)}")
+
+
+_detector = []
+
+
+def demo_events(camera_id: str):
+    """data/demo.mp4 через детектор и Engine камеры без schedule, 10 кадров/с. Печатает события."""
     import cv2
     from ml import create_detector
 
-    cam = next(c for c in load_cameras() if c.id == "cam1")
+    if not _detector:
+        _detector.append(create_detector("onnx"))
+    detector = _detector[0]
+    cam = next(c for c in load_cameras() if c.id == camera_id)
     cam = dataclasses.replace(cam, rules=[dataclasses.replace(r, schedule=None) for r in cam.rules])
     engine = Engine(cam)
-    detector = create_detector("onnx")
     cap = cv2.VideoCapture(str(ROOT / "data" / "demo.mp4"))
     step = (cap.get(cv2.CAP_PROP_FPS) or 25.0) / 10.0
     events, index, n, next_pos = [], 0, 0, 0.0
@@ -173,13 +193,102 @@ def demo_fall():
     for i in range(round(3.0 / DT)):
         engine.process(n / 10 + i * DT, w, h, [])
     for e in events:
-        print(json.dumps({"type": e.type, "track_id": e.track_id, "ts_start": round(e.ts_start, 2),
-                          "ts_confirm": round(e.ts_confirm, 2),
+        print(json.dumps({"camera_id": camera_id, "type": e.type, "track_id": e.track_id,
+                          "ts_start": round(e.ts_start, 2), "ts_confirm": round(e.ts_confirm, 2),
                           "ts_end": round(e.ts_end, 2) if e.ts_end is not None else None,
                           "extra": e.extra}, ensure_ascii=False))
-    falls = [e for e in events if e.type == "fall"]
-    expect(len(falls) == 1, f"{len(falls)} fall events")
-    expect(falls[0].ts_start >= 3.0, f"ts_start {falls[0].ts_start}")
+    return events
+
+
+def forklift_video():
+    """Первое видео с forklift в имени из data/videos/ через run_offline с proximity. Только печать."""
+    videos = sorted(p for p in (ROOT / "data" / "videos").rglob("*") if "forklift" in p.name.lower()) \
+        if (ROOT / "data" / "videos").exists() else []
+    if not videos:
+        print("forklift video: нет файлов в data/videos/")
+        return
+    import tempfile
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from run_offline import run_offline
+    out = Path(tempfile.mkdtemp()) / "forklift.jsonl"
+    events, frames, seconds = run_offline(str(videos[0]), "cam1", str(out), detector=_detector[0] if _detector else None)
+    print(f"forklift video {videos[0].name}: {frames} frames, {seconds:.1f} s")
+    for e in events:
+        if e.type == "proximity":
+            print(json.dumps({"type": e.type, "track_id": e.track_id, "ts_start": round(e.ts_start, 2),
+                              "ts_confirm": round(e.ts_confirm, 2), "extra": e.extra}, ensure_ascii=False))
+
+
+# Proximity и running: человек 80x200, грузовик 300x200
+TRUCK = (600.0, 300.0, 900.0, 500.0)
+
+
+def person(fx: float, fy: float) -> Detection:
+    return Detection(cls="person", conf=0.9, bbox=(fx - 40, fy - 200, fx + 40, fy))
+
+
+def truck(bbox=TRUCK) -> Detection:
+    return Detection(cls="truck", conf=0.9, bbox=bbox)
+
+
+def prox_run(seconds: float, make) -> Run:
+    return Run([RuleConfig(type="proximity")]).frames(seconds, make)
+
+
+def prox_near():
+    events = prox_run(2.0, lambda i: [person(500, 500), truck()]).of("proximity")
+    expect(len(events) == 1, f"{len(events)} events")
+    expect(events[0].extra.get("vehicle") == "truck", f"extra {events[0].extra}")
+
+
+def prox_far():
+    run = prox_run(3.0, lambda i: [person(0, 500), truck()])
+    # Точка ног (0, 500) на 600 px левее грузовика, 3 роста
+    expect(len(run.of("proximity")) == 0, f"{len(run.of('proximity'))} events")
+
+
+def prox_none():
+    run = prox_run(3.0, lambda i: [person(500, 500)])
+    expect(len(run.of("proximity")) == 0, f"{len(run.of('proximity'))} events")
+
+
+def prox_two():
+    second = (100.0, 300.0, 400.0, 500.0)
+    run = prox_run(2.0, lambda i: [person(500, 500), truck(), truck(second)])
+    expect(len(run.of("proximity")) == 1, f"{len(run.of('proximity'))} events")
+
+
+def run_rule(seconds: float, make, zones=None, zone=None) -> Run:
+    return Run([RuleConfig(type="running", zone=zone)], zones).frames(seconds, make)
+
+
+def run_fast():
+    run = run_rule(3.0, lambda i: [person(60 + 40 * i, 500)])
+    expect(len(run.of("running")) == 1, f"{len(run.of('running'))} events")
+
+
+def run_walk():
+    run = run_rule(5.0, lambda i: [person(100 + 15 * i, 500)])
+    expect(len(run.of("running")) == 0, f"{len(run.of('running'))} events")
+
+
+def run_jitter():
+    run = run_rule(5.0, lambda i: [person(500 + (20 if i % 2 else -20), 500)])
+    expect(len(run.of("running")) == 0, f"{len(run.of('running'))} events")
+
+
+def run_zone():
+    # Зона в нижней половине кадра от x = 320: 960 px хватает на 2.4 с бега
+    zone = Zone(id="floor", name="Floor", polygon=[(0.25, 0.5), (1.0, 0.5), (1.0, 1.0), (0.25, 1.0)])
+    outside = run_rule(3.0, lambda i: [person(60 + 40 * i, 300)], zones=[zone], zone="floor")
+    expect(len(outside.of("running")) == 0, f"outside {len(outside.of('running'))} events")
+    inside = run_rule(3.0, lambda i: [person(340 + 40 * i, 650)], zones=[zone], zone="floor")
+    expect(len(inside.of("running")) == 1, f"inside {len(inside.of('running'))} events")
+
+
+def registry4():
+    types = sorted(r["type"] for r in describe())
+    expect(types == ["danger_zone", "fall", "proximity", "running"], f"{types}")
 
 
 if __name__ == "__main__":
@@ -193,5 +302,16 @@ if __name__ == "__main__":
     check("fall_bend", fall_bend)
     check("registry", registry)
     check("broken_rule", broken_rule)
+    check("prox_near", prox_near)
+    check("prox_far", prox_far)
+    check("prox_none", prox_none)
+    check("prox_two", prox_two)
+    check("run_fast", run_fast)
+    check("run_walk", run_walk)
+    check("run_jitter", run_jitter)
+    check("run_zone", run_zone)
+    check("registry4", registry4)
     check("demo_fall", demo_fall)
+    check("demo_no_running", demo_no_running)
+    forklift_video()
     sys.exit(1 if failed else 0)

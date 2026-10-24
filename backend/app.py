@@ -10,20 +10,21 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend import snapshots
-from backend.cameras import load_cameras
+from backend.cameras import cameras_path, load_active, save_cameras
 from backend.db import EventDB
 from backend.draw import draw
 from backend.fixtures import gray_frame, make_event, save_snapshot, seed_events
 from backend.hub import STATUSES, Hub, Store, to_json
 from backend.pipeline import Pipeline
+from backend.validation import sanitize, validate_camera
 from core.schemas import CameraConfig, Event, RuleConfig, Zone
 
 log = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ class CameraIn(BaseModel):
 
 class EventPatch(BaseModel):
     status: str
-    comment: str | None = None
+    comment: str | None = Field(None, max_length=1000)
 
 
 def read_json(path: Path, default):
@@ -95,7 +96,7 @@ def encode_jpeg(img: np.ndarray) -> bytes:
 def create_app() -> FastAPI:
     use_pipeline = os.environ.get("PIPELINE", "1") == "1"
     db = EventDB(os.environ.get("DB_PATH") or DEFAULT_DB_PATH) if use_pipeline else EventDB(":memory:")
-    store = Store(load_cameras(), db)
+    store = Store(load_active(), db)
     hub = Hub()
     interval = float(os.environ.get("FIXTURE_WS_INTERVAL", "10"))
     detector_backend = os.environ.get("DETECTOR_BACKEND") or "onnx"
@@ -105,6 +106,11 @@ def create_app() -> FastAPI:
     def add_fixture_event(event: Event) -> dict:
         save_snapshot(event, MEDIA_DIR)
         return store.add_event(event, f"{event.camera_id}/{event.id}.jpg")
+
+    if not use_pipeline:
+        # Тестовые события засеваются сразу, без lifespan: TestClient без with тоже их видит
+        for seed in seed_events():
+            add_fixture_event(seed)
 
     async def fixture_loop():
         while True:
@@ -120,13 +126,18 @@ def create_app() -> FastAPI:
 
     def on_result(camera_id, ts, frame, result):
         for event in result.new_events:
+            # Сначала событие в базу и в WebSocket, снимок после: без снимка тревога не теряется.
             try:
-                rel = snapshots.save_snapshot(frame, event, camera_id)
-                send("event_new", store.add_event(event, rel))
+                send("event_new", store.add_event(event, snapshots.snapshot_path(camera_id, event.id)))
                 log.info("event new: camera %s type %s track %s ts_confirm %.2f", camera_id, event.type,
                          event.track_id, event.ts_confirm)
             except Exception:
                 log.exception("камера %s: событие %s не сохранено", camera_id, event.id)
+                continue
+            try:
+                snapshots.save_snapshot(frame, event, camera_id)
+            except Exception:
+                log.error("камера %s: снимок события %s не записан", camera_id, event.id, exc_info=True)
         for event in result.closed_events:
             try:
                 send("event_update", store.close_event(event.id, event.ts_end))
@@ -147,8 +158,6 @@ def create_app() -> FastAPI:
             state["pipeline"] = Pipeline(list(store.cameras.values()), state["detector"], on_result)
             state["pipeline"].start()
         else:
-            for event in seed_events():
-                add_fixture_event(event)
             task = asyncio.create_task(fixture_loop())
         yield
         if task is not None:
@@ -196,14 +205,30 @@ def create_app() -> FastAPI:
         return [to_json(c) for c in store.cameras.values()]
 
     @app.put("/api/cameras/{camera_id}")
-    def put_camera(camera_id: str, body: CameraIn):
-        if body.id != camera_id:
-            raise HTTPException(400, "id in path and body differ")
+    def put_camera(camera_id: str, body: dict = Body(...)):
         get_camera(camera_id)
-        store.cameras[camera_id] = body.to_config()
+        if body.get("id") != camera_id:
+            raise HTTPException(400, "id in path and body differ")
+        errors = validate_camera(body, {r["type"]: r for r in store.rule_specs()})
+        if errors:
+            log.warning("камера %s: PUT отклонён: %s", sanitize(camera_id), sanitize("; ".join(errors)))
+            raise HTTPException(422, "; ".join(errors))
+        try:
+            cfg = CameraIn(**body).to_config()
+        except ValueError as e:
+            raise HTTPException(422, sanitize(e))
+        old = store.cameras[camera_id]
+        store.cameras[camera_id] = cfg
+        try:
+            save_cameras(cameras_path(), list(store.cameras.values()))
+        except OSError as e:
+            store.cameras[camera_id] = old
+            log.error("камера %s: камеры не записаны: %s", camera_id, e)
+            raise HTTPException(500, "не удалось сохранить камеры")
         if state["pipeline"] is not None:
-            state["pipeline"].update_camera(store.cameras[camera_id])
-        return to_json(store.cameras[camera_id])
+            state["pipeline"].update_camera(cfg)
+        log.info("камера %s: изменения применены", camera_id)
+        return to_json(cfg)
 
     @app.get("/api/cameras/{camera_id}/frame")
     def frame(camera_id: str):
@@ -263,8 +288,8 @@ def create_app() -> FastAPI:
         severity: str | None = None,
         ts_from: float | None = Query(None, alias="from"),
         ts_to: float | None = Query(None, alias="to"),
-        limit: int = 50,
-        offset: int = 0,
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
     ):
         items, total = store.list_events(type=type, camera_id=camera_id, zone_id=zone_id, status=status,
                                          severity=severity, ts_from=ts_from, ts_to=ts_to,
