@@ -1,5 +1,5 @@
 {
-  "test_set": "data/videos/test/labels.csv",
+  "test_set": "data/test_set/labels.csv",
   "rules": {
     "danger_zone": {
       "tp": 1,
@@ -18,7 +18,7 @@
     "running": {
       "tp": 0,
       "fp": 0,
-      "fn": 1,
+      "fn": 2,
       "precision": 0.0,
       "recall": 0.0
     }
