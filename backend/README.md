@@ -59,7 +59,7 @@ python scripts/check_cameras.py
 
 ## Тестовые видео
 
-Набор для подбора порогов: `data/videos/test/` (видео и `labels.csv`, вне git). Камеры для этих видео описаны в `configs/cameras.test.yaml`. Сервер этот файл не читает, его используют только `run_offline.py` и `eval_offline.py`.
+Набор для подбора порогов: `data/videos/dev/` (видео и `labels.csv`, вне git). Камеры для этих видео описаны в `configs/cameras.test.yaml`. Сервер этот файл не читает, его используют только `run_offline.py` и `eval_offline.py`.
 
 | `id` | Видео | Правила |
 |---|---|---|
@@ -70,19 +70,19 @@ python scripts/check_cameras.py
 `run_offline.py` ищет камеру в `configs/cameras.yaml`, а если её там нет, в `configs/cameras.test.yaml`:
 
 ```bash
-python scripts/run_offline.py --video data/videos/test/fall.mov --camera test_fall --out /tmp/fall.jsonl
+python scripts/run_offline.py --video data/videos/dev/fall.mov --camera test_fall --out /tmp/fall.jsonl
 ```
 
 Прогон всего набора против `labels.csv`: по каждому видео события, `tp`, `fp`, `fn`, в конце итог по типам и задержка тревоги `ts_confirm - t_start`. Официальные метрики считает ML-7 на контрольном наборе.
 
 ```bash
-python scripts/eval_offline.py [--labels data/videos/test/labels.csv] [--videos data/videos/test]
+python scripts/eval_offline.py [--labels data/videos/dev/labels.csv] [--videos data/videos/dev]
 ```
 
 Кадр видео для разметки зоны:
 
 ```bash
-python scripts/extract_frame.py --video data/videos/test/danger_zone.mov --t 1 --out backend/media/frames/danger_zone_t1.jpg
+python scripts/extract_frame.py --video data/videos/dev/danger_zone.mov --t 1 --out backend/media/frames/danger_zone_t1.jpg
 ```
 
 ## Пайплайн
@@ -192,8 +192,8 @@ python scripts/check_logic.py
 
 | Набор | Видео | Разметка | Назначение |
 |---|---|---|---|
-| Для настройки | `data/videos/test/`: `fall.mov`, `running.mov`, `danger_zone.mov`, `normal_sit_stand.mov`, `proximity.mp4` | `data/videos/test/labels.csv`, локально, вне git | подбор порогов, камеры `test_*` в `configs/cameras.test.yaml` |
-| Контрольный | `data/videos/holdout/` | `data/test_set/labels.csv` | только метрики ML-7, для подбора не используется |
+| Для настройки | `data/videos/dev/`: `fall.mov`, `running.mov`, `danger_zone.mov`, `normal_sit_stand.mov`, `proximity.mp4` | `data/videos/dev/labels.csv`, локально, вне git | подбор порогов, камеры `test_*` в `configs/cameras.test.yaml` |
+| Контрольный | `data/videos/test/`: `fall_02.mov`, `running_03.mov`, `danger_zone_02.mov`, `normal_walking.MOV` | `data/test_set/labels.csv` | только метрики ML-7, для подбора не используется |
 
 `eval_offline.py` обходит все видео папки (`.mov`, `.MOV`, `.mp4`, `.MP4`). Видео без строк в разметке считаются сценами без нарушений: любое событие на них — ложная тревога. Камера для видео: `test_<имя без расширения>`, иначе `test_<type>` по разметке, иначе `test_normal`.
 
