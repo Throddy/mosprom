@@ -81,9 +81,42 @@ export interface EventsQuery {
   offset?: number
 }
 
+// GET /api/stats, раздел 6; by_hour — 24 значения по часу ts_confirm по местному времени сервера
 export interface Stats {
   total: number
   by_type: Record<string, number>
+  by_camera: Record<string, number>
+  by_severity: Record<string, number>
+  by_status: Record<string, number>
+  by_hour: number[]
+  by_day: Record<string, number>
+}
+
+// Запись reports/benchmarks.json через GET /api/benchmarks, раздел 8; fps суммарно по потокам
+export interface Benchmark {
+  model: string
+  backend: string
+  device: string
+  precision: string
+  input: number
+  streams: number
+  fps: number
+  latency_ms: { pre: number; infer: number; post: number; total: number }
+  measured_at: string
+}
+
+export interface RuleMetrics {
+  tp: number
+  fp: number
+  fn: number
+  precision: number
+  recall: number
+}
+
+// reports/metrics.json через GET /api/metrics, раздел 8; до ML-7 сервер отдаёт {}
+export interface Metrics {
+  test_set?: string
+  rules?: Record<string, RuleMetrics>
 }
 
 export interface Status {

@@ -1,4 +1,15 @@
-import type { Camera, EventStatus, EventView, EventsPage, EventsQuery, RuleSpec, Stats, Status } from './types.ts'
+import type {
+  Benchmark,
+  Camera,
+  EventStatus,
+  EventView,
+  EventsPage,
+  EventsQuery,
+  Metrics,
+  RuleSpec,
+  Stats,
+  Status,
+} from './types.ts'
 
 // Ошибка API: HTTP-код и текст из {"detail": "..."}
 export class ApiError extends Error {
@@ -75,8 +86,21 @@ export function getRules(signal?: AbortSignal): Promise<RuleSpec[]> {
   return request<RuleSpec[]>('/api/rules', { signal })
 }
 
-export function getStats(signal?: AbortSignal): Promise<Stats> {
-  return request<Stats>('/api/stats', { signal })
+// from и to в unix-секундах, по ts_confirm
+export function getStats(signal?: AbortSignal, range?: { from?: number; to?: number }): Promise<Stats> {
+  const params = new URLSearchParams()
+  if (range?.from !== undefined) params.set('from', String(range.from))
+  if (range?.to !== undefined) params.set('to', String(range.to))
+  const qs = params.toString()
+  return request<Stats>(qs ? `/api/stats?${qs}` : '/api/stats', { signal })
+}
+
+export function getBenchmarks(signal?: AbortSignal): Promise<Benchmark[]> {
+  return request<Benchmark[]>('/api/benchmarks', { signal })
+}
+
+export function getMetrics(signal?: AbortSignal): Promise<Metrics> {
+  return request<Metrics>('/api/metrics', { signal })
 }
 
 // PUT /api/cameras/{id}: камера целиком в формате Camera, ответ — сохранённая камера
