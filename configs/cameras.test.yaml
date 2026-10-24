@@ -7,6 +7,14 @@ cameras:
     zones: []
     rules:
       - {type: fall, enabled: true}
+      - {type: phone, enabled: true}
+  - id: test_phone
+    name: "Тест: телефон"
+    source: data/videos/dev/fall.mov
+    fps: 10
+    zones: []
+    rules:
+      - {type: phone, enabled: true}
   - id: test_running
     name: "Тест: бег"
     source: data/videos/dev/running.mov

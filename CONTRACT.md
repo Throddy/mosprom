@@ -40,7 +40,7 @@ import numpy as np
 
 BBox = tuple[float, float, float, float]  # x1, y1, x2, y2 в пикселях исходного кадра
 
-CLASSES = ("person", "car", "truck", "bus", "forklift")
+CLASSES = ("person", "car", "truck", "bus", "forklift", "phone")
 SEVERITIES = ("critical", "high", "medium")
 
 @dataclass
@@ -143,6 +143,7 @@ def create_detector(backend: str | None = None) -> Detector: ...
 | `danger_zone` | Человек в опасной зоне | 05 |
 | `proximity` | Сближение человека с техникой | 02 |
 | `running` | Бег в зоне работы техники | 01 |
+| `phone` | Телефон при работе и в проходах | 03 |
 
 Гарантии:
 

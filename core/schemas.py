@@ -4,7 +4,7 @@ import numpy as np
 
 BBox = tuple[float, float, float, float]  # x1, y1, x2, y2 в пикселях исходного кадра
 
-CLASSES = ("person", "car", "truck", "bus", "forklift")
+CLASSES = ("person", "car", "truck", "bus", "forklift", "phone")
 SEVERITIES = ("critical", "high", "medium")
 
 @dataclass
