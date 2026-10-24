@@ -27,7 +27,13 @@ class RightHalf(Rule):
         return {t.track_id: {} for t in ctx.tracks.values() if (t.bbox[0] + t.bbox[2]) / 2 > ctx.width / 2}
 
 
+class RightHalfB(RightHalf):
+    type = "_test_right_b"
+    title = "Test: right half, second type"
+
+
 register(RightHalf())
+register(RightHalfB())
 
 failed = False
 
@@ -51,16 +57,16 @@ def person(cx: float, cy: float = 400.0) -> Detection:
     return Detection(cls="person", conf=0.9, bbox=(cx - 40, cy - 120, cx + 40, cy + 120))
 
 
-def camera(schedule=None) -> CameraConfig:
-    return CameraConfig(id="test", name="test", source="", fps=10,
-                        rules=[RuleConfig(type="_test_right", schedule=schedule)])
+def camera(schedule=None, rules=None, camera_id="test") -> CameraConfig:
+    return CameraConfig(id=camera_id, name=camera_id, source="", fps=10,
+                        rules=rules or [RuleConfig(type="_test_right", schedule=schedule)])
 
 
 class Run:
     """Прогон кадров через Engine с шагом DT."""
 
-    def __init__(self, schedule=None):
-        self.engine = Engine(camera(schedule))
+    def __init__(self, schedule=None, cam: CameraConfig | None = None):
+        self.engine = Engine(cam or camera(schedule))
         self.ts = _time.time()
         self.new, self.closed, self.track_ids = [], [], []
 
@@ -147,6 +153,78 @@ def describe_rules():
     expect(any(p["name"] == "min_duration" for p in spec["params"]), "no min_duration")
 
 
+def repeat_episode(second, gap: float = 3.0, cam: CameraConfig | None = None) -> Run:
+    """Нарушение 3 с, затем gap с без детекций, затем новый трек second() нарушает ещё 3 с."""
+    return Run(cam=cam).frames(3.0, lambda: [person(RIGHT_X)]).frames(gap, None).frames(3.0, second)
+
+
+def repeat_suppress():
+    run = repeat_episode(lambda: [person(RIGHT_X)])
+    ids = {i for f in run.track_ids for i in f}
+    expect(len(ids) == 2, f"track ids {sorted(ids)}")
+    expect(len(run.new) == 1, f"{len(run.new)} events")
+    expect(run.engine.suppressed_counts == {"_test_right": 1}, f"counts {run.engine.suppressed_counts}")
+
+
+def repeat_far():
+    # Рост бокса 240 px, второй трек в пяти ростах ниже-правее по кадру
+    run = repeat_episode(lambda: [person(RIGHT_X + 300, 400 + 1150)])
+    expect(len(run.new) == 2, f"{len(run.new)} events")
+    expect(not run.engine.suppressed_counts, f"counts {run.engine.suppressed_counts}")
+
+
+def repeat_late():
+    run = repeat_episode(lambda: [person(RIGHT_X)], gap=15.0 + 2.0)
+    expect(len(run.new) == 2, f"{len(run.new)} events")
+
+
+def repeat_other_type():
+    cam = camera(rules=[RuleConfig(type="_test_right")])
+    run = Run(cam=cam).frames(3.0, lambda: [person(RIGHT_X)]).frames(3.0, None)
+    run.engine.update_config(camera(rules=[RuleConfig(type="_test_right_b")]))
+    run.frames(3.0, lambda: [person(RIGHT_X)])
+    expect(len(run.new) == 2 and {e.type for e in run.new} == {"_test_right", "_test_right_b"},
+           f"{[e.type for e in run.new]}")
+
+
+def repeat_other_zone():
+    # Одно правило с разными зонами: needs_zone=False, зона только часть ключа
+    run = Run(cam=camera(rules=[RuleConfig(type="_test_right", zone="a")]))
+    run.frames(3.0, lambda: [person(RIGHT_X)]).frames(3.0, None)
+    run.engine.update_config(camera(rules=[RuleConfig(type="_test_right", zone="b")]))
+    run.frames(3.0, lambda: [person(RIGHT_X)])
+    expect(len(run.new) == 2 and {e.zone_id for e in run.new} == {"a", "b"}, f"{[e.zone_id for e in run.new]}")
+
+
+def repeat_other_camera():
+    a = repeat_episode(lambda: [person(RIGHT_X)], cam=camera(camera_id="a"))
+    b = Run(cam=camera(camera_id="b")).frames(3.0, lambda: [person(RIGHT_X)])
+    expect(len(a.new) == 1 and len(b.new) == 1, f"a {len(a.new)}, b {len(b.new)}")
+
+
+def repeat_count_once():
+    # Подавленный эпизод длится 6 с: счётчик 1, а не по кадру
+    run = repeat_episode(lambda: [person(RIGHT_X)]).frames(3.0, lambda: [person(RIGHT_X)])
+    expect(run.engine.suppressed_counts == {"_test_right": 1}, f"counts {run.engine.suppressed_counts}")
+    expect(len(run.engine.recent) <= 1, f"recent {len(run.engine.recent)}")
+
+
+def repeat_continue_open():
+    # Открытое событие продолжается новым треком, если старого трека нет в кадре
+    from logic import engine as engine_mod
+    run = Run().frames(3.0, lambda: [person(RIGHT_X)])
+    first_key = next(iter(run.engine.open))
+    # Разрыв трека: трекер сбрасывается, событие старого трека ещё открыто (трек живёт CLOSE_AFTER с).
+    # id 1 занимается фиктивной детекцией вдали, чтобы тот же человек получил новый id.
+    run.engine.tracker = engine_mod.Tracker(10)
+    run.engine.tracker.update([person(LEFT_X - 200)])
+    run.frames(1.5, lambda: [person(RIGHT_X)])
+    expect(len(run.new) == 1, f"{len(run.new)} events")
+    expect(first_key not in run.engine.open and len(run.engine.open) == 1, f"open {list(run.engine.open)}")
+    expect(next(iter(run.engine.open.values()))["event"] is run.new[0], "event not continued")
+    expect(not run.closed, f"{len(run.closed)} closed")
+
+
 if __name__ == "__main__":
     check("track_stable", track_stable)
     check("min_duration", min_duration)
@@ -158,4 +236,12 @@ if __name__ == "__main__":
     check("schedule", schedule)
     check("schedule_midnight", schedule_midnight)
     check("describe", describe_rules)
+    check("repeat_suppress", repeat_suppress)
+    check("repeat_far", repeat_far)
+    check("repeat_late", repeat_late)
+    check("repeat_other_type", repeat_other_type)
+    check("repeat_other_zone", repeat_other_zone)
+    check("repeat_other_camera", repeat_other_camera)
+    check("repeat_count_once", repeat_count_once)
+    check("repeat_continue_open", repeat_continue_open)
     sys.exit(1 if failed else 0)

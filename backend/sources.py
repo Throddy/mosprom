@@ -143,6 +143,55 @@ class RtspSource(FrameSource):
         self.thread.join(timeout=3)
 
 
+class _FfmpegReader:
+    """Чтение потока подпроцессом ffmpeg без вывода: кадры bgr24 заданного размера через pipe.
+
+    Наследник задаёт _stream_url(), _input_args() и _frame_size(url). ffmpeg запускается с -loglevel quiet
+    и без stderr: адрес потока, в том числе с токеном, в лог не попадает.
+    """
+
+    def _input_args(self) -> list[str]:
+        return []
+
+    def _frame_size(self, url: str) -> tuple[int, int]:
+        raise NotImplementedError
+
+    def _run(self) -> None:
+        while not self.stopped.is_set():
+            url = self._stream_url()
+            if url:
+                self._read_ffmpeg(url)
+            self.stopped.wait(self.reconnect)
+
+    def _read_ffmpeg(self, url: str) -> None:
+        width, height = self._frame_size(url)
+        size = width * height * 3
+        proc = subprocess.Popen(
+            ["ffmpeg", "-loglevel", "quiet", "-nostdin", *self._input_args(), "-i", url, "-an",
+             "-vf", f"scale={width}:{height},fps={self.show_fps:g}",
+             "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.proc = proc
+        try:
+            while not self.stopped.is_set():
+                data = proc.stdout.read(size)
+                if len(data) < size:
+                    break
+                frame = np.frombuffer(data, np.uint8).reshape(height, width, 3)
+                with self.lock:
+                    self.last = (time.time(), frame)
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def close(self) -> None:
+        self.stopped.set()
+        proc = getattr(self, "proc", None)
+        if proc is not None:
+            proc.kill()
+        self.thread.join(timeout=3)
+
+
 class HttpSource(RtspSource):
     """HTTP(S) поток, например HLS .m3u8: как RTSP, переподключение каждые 5 с.
     Для главного плейлиста HLS выбирается вариант до 720p."""
@@ -162,6 +211,11 @@ class HttpSource(RtspSource):
 def hls_variant(url: str, max_height: int = 720) -> str:
     """Для главного плейлиста HLS — вариант с наибольшей высотой не больше max_height, а если таких нет,
     с наименьшей высотой. Для плейлиста одного варианта — тот же адрес."""
+    return hls_variant_size(url, max_height)[0]
+
+
+def hls_variant_size(url: str, max_height: int = 720) -> tuple[str, int, int]:
+    """Как hls_variant, плюс ширина и высота варианта из RESOLUTION; 0, 0 — если не указаны."""
     request = urllib.request.Request(url, headers={"User-Agent": ivideon.HEADERS["User-Agent"]})
     with urllib.request.urlopen(request, timeout=15, context=ivideon._context()) as r:
         text = r.read(65536).decode("utf-8", "replace")
@@ -170,14 +224,57 @@ def hls_variant(url: str, max_height: int = 720) -> str:
         line = line.strip()
         if line.startswith("#EXT-X-STREAM-INF"):
             m = re.search(r"RESOLUTION=(\d+)x(\d+)", line)
-            height = int(m.group(2)) if m else 0
+            width, height = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
         elif line and not line.startswith("#") and height is not None:
-            variants.append((height, urllib.parse.urljoin(url, line)))
+            variants.append((height, width, urllib.parse.urljoin(url, line)))
             height = None
     if not variants:
-        return url
+        return url, 0, 0
     fit = [v for v in variants if 0 < v[0] <= max_height]
-    return max(fit)[1] if fit else min(variants)[1]
+    height, width, variant = max(fit) if fit else min(variants)
+    return variant, width, height
+
+
+class HlsSource(_FfmpegReader, HttpSource):
+    """HLS .m3u8: вариант до 720p, чтение ffmpeg с -re — кадры идут в темпе видео, а не пачками по сегментам.
+    Размер кадра — из RESOLUTION варианта, без него — ffprobe; высота не больше 720."""
+
+    MAX_HEIGHT = 720
+
+    def __init__(self, url: str, fps: float):
+        self.show_fps = fps
+        self.size: tuple[int, int] | None = None
+        super().__init__(url, fps)
+
+    def _stream_url(self) -> str | None:
+        try:
+            variant, width, height = hls_variant_size(self.url, self.MAX_HEIGHT)
+        except Exception as e:
+            log.warning("источник %s: плейлист HLS не прочитан: %s", sanitize(ivideon.safe(self.url)), sanitize(e))
+            variant, width, height = self.url, 0, 0
+        self.size = (width, height) if width and height else None
+        return variant
+
+    def _input_args(self) -> list[str]:
+        return ["-re"]
+
+    def _frame_size(self, url: str) -> tuple[int, int]:
+        width, height = self.size or _probe_size(url)
+        if height > self.MAX_HEIGHT:
+            width, height = round(width * self.MAX_HEIGHT / height), self.MAX_HEIGHT
+        return width - width % 2, height - height % 2
+
+
+def _probe_size(url: str) -> tuple[int, int]:
+    """Размер видео через ffprobe без вывода ошибок; при неудаче — 1280x720."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+             "-of", "csv=p=0", url], capture_output=True, text=True, timeout=20).stdout.strip()
+        width, height = (int(x) for x in out.split(",")[:2])
+        return width, height
+    except Exception:
+        return 1280, 720
 
 
 class ResolvedSource(HttpSource):
@@ -214,7 +311,7 @@ class ResolvedSource(HttpSource):
         return self.direct
 
 
-class IvideonSource(ResolvedSource):
+class IvideonSource(_FfmpegReader, ResolvedSource):
     """Публичная камера Ivideon: поток FLV по ссылке из openapi, декодирует ffmpeg в 1280x720.
 
     Ссылка содержит токен. cv2.VideoCapture при ошибке открытия печатает адрес целиком в stderr,
@@ -228,36 +325,8 @@ class IvideonSource(ResolvedSource):
         self.show_fps = fps
         super().__init__(page, fps)
 
-    def _run(self) -> None:
-        size = self.WIDTH * self.HEIGHT * 3
-        while not self.stopped.is_set():
-            url = self._stream_url()
-            if url:
-                proc = subprocess.Popen(
-                    ["ffmpeg", "-loglevel", "quiet", "-nostdin", "-i", url, "-an",
-                     "-vf", f"scale={self.WIDTH}:{self.HEIGHT},fps={self.show_fps:g}",
-                     "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"],
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                self.proc = proc
-                try:
-                    while not self.stopped.is_set():
-                        data = proc.stdout.read(size)
-                        if len(data) < size:
-                            break
-                        frame = np.frombuffer(data, np.uint8).reshape(self.HEIGHT, self.WIDTH, 3)
-                        with self.lock:
-                            self.last = (time.time(), frame)
-                finally:
-                    proc.kill()
-                    proc.wait()
-            self.stopped.wait(self.reconnect)
-
-    def close(self) -> None:
-        self.stopped.set()
-        proc = getattr(self, "proc", None)
-        if proc is not None:
-            proc.kill()
-        self.thread.join(timeout=3)
+    def _frame_size(self, url: str) -> tuple[int, int]:
+        return self.WIDTH, self.HEIGHT
 
     def _resolve(self) -> str:
         url = ivideon.resolve(self.camera_id, "flv")
@@ -334,7 +403,11 @@ def open_source(source: str, fps: float) -> FrameSource:
     if source.startswith(("http://", "https://")):
         if ivideon.camera_id(source):
             return IvideonSource(source, fps)
-        return ResolvedSource(source, fps) if _needs_resolve(source) else HttpSource(source, fps)
+        if _needs_resolve(source):
+            return ResolvedSource(source, fps)
+        if urllib.parse.urlsplit(source).path.endswith(".m3u8"):
+            return HlsSource(source, fps)
+        return HttpSource(source, fps)
     path = Path(source)
     if not path.is_absolute():
         path = ROOT / path
