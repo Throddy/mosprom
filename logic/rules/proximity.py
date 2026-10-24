@@ -26,11 +26,15 @@ def inside_share(inner, outer) -> float:
     return w * h / area
 
 
-def is_inside(person_bbox, vehicle_bbox, inside_ratio: float) -> bool:
-    """Человек в кабине или водитель: точка ног внутри бокса техники и не меньше inside_ratio
-    площади бокса человека внутри бокса техники."""
+def is_inside(person_bbox, vehicle_bbox, inside_ratio: float, cab_min: float = 0.15) -> bool:
+    """Водитель в кабине: точка ног внутри бокса техники, не меньше inside_ratio площади бокса человека
+    внутри бокса техники и точка ног выше нижнего края бокса техники не меньше чем на cab_min его высоты.
+    Пешеход прямо перед техникой стоит на полу: его точка ног у нижнего края бокса, он не водитель."""
     x, y = foot_point(person_bbox)
-    return point_to_box(x, y, vehicle_bbox) == 0.0 and inside_share(person_bbox, vehicle_bbox) >= inside_ratio
+    vy1, vy2 = vehicle_bbox[1], vehicle_bbox[3]
+    in_cab = vy2 - y >= cab_min * (vy2 - vy1)
+    return point_to_box(x, y, vehicle_bbox) == 0.0 and in_cab \
+        and inside_share(person_bbox, vehicle_bbox) >= inside_ratio
 
 
 class ProximityRule(Rule):
@@ -39,14 +43,16 @@ class ProximityRule(Rule):
     severity = "critical"
     needs_zone = False
     params = [
-        {"name": "dist", "type": "float", "unit": "рост человека", "default": 1.0},
+        {"name": "dist", "type": "float", "unit": "рост человека", "default": 2.0},
         {"name": "inside_ratio", "type": "float", "unit": "доля", "default": 0.7},
+        {"name": "cab_min", "type": "float", "unit": "доля высоты техники", "default": 0.15},
         {"name": "min_duration", "type": "float", "unit": "с", "default": 0.5},
     ]
 
     def check(self, ctx: FrameContext, cfg: RuleConfig) -> dict[int, dict]:
         limit = float(self.param(cfg, "dist"))
         inside_ratio = float(self.param(cfg, "inside_ratio"))
+        cab_min = float(self.param(cfg, "cab_min"))
         zone = ctx.zones.get(cfg.zone) if cfg.zone else None
         vehicles = [t for t in ctx.tracks.values() if t.cls in VEHICLES]
         if not vehicles:
@@ -63,7 +69,7 @@ class ProximityRule(Rule):
                 continue
             # Технику, в кабине которой находится человек, для него не учитываем: это водитель
             nearby = [(point_to_box(x, y, v.bbox) / h, v) for v in vehicles
-                      if not is_inside(track.bbox, v.bbox, inside_ratio)]
+                      if not is_inside(track.bbox, v.bbox, inside_ratio, cab_min)]
             if not nearby:
                 continue
             d_norm, nearest = min(nearby, key=lambda p: p[0])
