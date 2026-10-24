@@ -5,6 +5,7 @@ from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
 from core.schemas import BBox, Detection
+from ml.crops import Model, add_tile_persons
 from ml.prepost import keep_by_class_conf, lowest_conf
 
 
@@ -19,6 +20,7 @@ class OnnxDetector:
         self._det_conf = det_cfg["conf"]
         self._class_conf = det_cfg.get("class_conf", {})
         self._pose_args = {"imgsz": pose_cfg["imgsz"], "conf": pose_cfg["conf"]}
+        self._tiles = pose_cfg.get("tiles")
         self._det_args = {
             "imgsz": det_cfg["imgsz"],
             "conf": lowest_conf(self._det_conf, self._class_conf),
@@ -33,9 +35,16 @@ class OnnxDetector:
         for image in images:
             pose_result = _predict(self._pose, image, self._pose_args, timing)
             det_result = _predict(self._det, image, self._det_args, timing)
-            detections.append(_persons(pose_result) + self._objects(det_result))
+            persons = add_tile_persons(image, _persons(pose_result), self._pose_model(timing),
+                                       self._tiles)
+            detections.append(persons + self._objects(det_result))
         self.last_timing = timing
         return detections
+
+    def _pose_model(self, timing: dict[str, float]) -> Model:
+        def run(crops: list[np.ndarray]) -> list[list[Detection]]:
+            return [_persons(_predict(self._pose, crop, self._pose_args, timing)) for crop in crops]
+        return run
 
     def _objects(self, result: Results) -> list[Detection]:
         boxes = result.boxes.cpu().numpy()

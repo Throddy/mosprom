@@ -1,5 +1,6 @@
 models:
-  pose: {weights: ml/weights/yolov8n-pose.onnx, imgsz: 640, conf: 0.4}
+  pose: {weights: ml/weights/yolov8n-pose.onnx, imgsz: 640, conf: 0.4,
+         tiles: {enabled: false, rows: 2, cols: 3, overlap: 0.2, trigger_max_h: 0.2}}
   det: {weights: ml/weights/yolov8n.onnx, imgsz: 640, conf: 0.4,
         classes: {2: car, 5: bus, 7: truck, 67: phone}, class_conf: {phone: 0.35}}
   linq: {pose_program: yolov8n-pose_head_b1_o1_h1m.tpu, det_program: yolov8n_head_b1_o1_h1m.tpu}

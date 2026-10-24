@@ -2,6 +2,7 @@ import json
 import os
 import time
 import uuid
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,7 @@ from tpu_pycloud_format import (MESSAGE_ID_ATTR_NAME, RESPONSE_ROUTING_KEYS_ATTR
                                 TARGET_URI_ATTR_NAME, PyTask, deserialize, serialize)
 
 from core.schemas import Detection
+from ml.crops import add_tile_persons
 from ml.prepost import IOU, postprocess_det, postprocess_pose, preprocess
 
 # Конвенции облака LinQ: notebooks/linq.md, раздел «Вызов через API».
@@ -37,6 +39,7 @@ class LinqDetector:
         self._pose_conf, self._det_conf = pose_cfg["conf"], det_cfg["conf"]
         self._det_classes = det_cfg["classes"]
         self._class_conf = det_cfg.get("class_conf", {})
+        self._tiles = pose_cfg.get("tiles")
         self._params = pika.ConnectionParameters(
             host=_env("LINQ_AMQP_HOST"), port=int(_env("LINQ_AMQP_PORT")),
             credentials=pika.PlainCredentials(_env("LINQ_AMQP_USER"), _env("LINQ_AMQP_PASSWORD")))
@@ -57,12 +60,40 @@ class LinqDetector:
             self._decode(outputs[2 * i], outputs[2 * i + 1], meta, (image.shape[1], image.shape[0]))
             for i, (image, (_, meta)) in enumerate(zip(images, prepared))
         ]
+        post_done = time.perf_counter()
+        timing = {"pre": 0.0, "infer": 0.0, "post": 0.0}
+        detections = [self._with_tiles(image, found, timing)
+                      for image, found in zip(images, detections)]
         self.last_timing = {
-            "pre": (pre_done - started) * 1000,
-            "infer": (infer_done - pre_done) * 1000,
-            "post": (time.perf_counter() - infer_done) * 1000,
+            "pre": (pre_done - started) * 1000 + timing["pre"],
+            "infer": (infer_done - pre_done) * 1000 + timing["infer"],
+            "post": (post_done - infer_done) * 1000 + timing["post"],
         }
         return detections
+
+    def _with_tiles(self, image: np.ndarray, found: list[Detection],
+                    timing: dict[str, float]) -> list[Detection]:
+        persons = [d for d in found if d.cls == "person"]
+        others = [d for d in found if d.cls != "person"]
+        model = partial(self._pose_on_crops, timing=timing)
+        return add_tile_persons(image, persons, model, self._tiles) + others
+
+    def _pose_on_crops(self, crops: list[np.ndarray],
+                       timing: dict[str, float]) -> list[list[Detection]]:
+        started = time.perf_counter()
+        prepared = [preprocess(crop) for crop in crops]
+        pre_done = time.perf_counter()
+        outputs = self._call([(self._pose_uri, tensor) for tensor, _ in prepared])
+        infer_done = time.perf_counter()
+        found = [
+            postprocess_pose(_run_tail(self._pose_tail, output), meta,
+                             (crop.shape[1], crop.shape[0]), self._pose_conf, IOU)
+            for crop, (_, meta), output in zip(crops, prepared, outputs)
+        ]
+        timing["pre"] += (pre_done - started) * 1000
+        timing["infer"] += (infer_done - pre_done) * 1000
+        timing["post"] += (time.perf_counter() - infer_done) * 1000
+        return found
 
     def _decode(self, pose_out: dict, det_out: dict, meta: tuple[float, int, int],
                 frame_size: tuple[int, int]) -> list[Detection]:
