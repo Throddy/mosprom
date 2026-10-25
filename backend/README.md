@@ -66,6 +66,9 @@ set -a; source .env; set +a
 | `STREAM_QUALITY` | `85` | качество JPEG кадров `/stream` |
 | `STREAM_DELAY` | `auto` | задержка показа, с, или `auto`; раздел «Показ видео» |
 | `STREAM_BUFFER_MAX` | `12` | предел задержки показа и буфера кадров показа, с |
+| `HLS_ENABLED` | `0` | `1`: видео камер в H.264 (HLS) по `/hls/<camera_id>/index.m3u8`, раздел «Показ видео» |
+| `HLS_DIR` | `backend/data/hls` | папка сегментов HLS, путь от корня репозитория |
+| `HLS_BITRATE` | `1800k` | битрейт H.264 на камеру; `maxrate` ×1.3, `bufsize` ×2 |
 | `PIPELINE` | `1` | `1`: реальные события, камеры обрабатываются детектором и правилами, события в базе `DB_PATH`; `0`: тестовые события в базе в памяти, тестовая тревога раз в `FIXTURE_WS_INTERVAL` с |
 | `FIXTURE_WS_INTERVAL` | `10` | интервал тестовой тревоги в `/ws/events` при `PIPELINE=0`, с |
 | `DB_PATH` | `backend/data/events.sqlite3` | база событий при `PIPELINE=1`, путь от корня репозитория |
@@ -83,7 +86,7 @@ set -a; source .env; set +a
 - `GET /api/events`: `limit` от 1 до 500 (по умолчанию 50), `offset` не меньше 0.
 - `PATCH /api/events/{id}`: `comment` не длиннее 1000 символов.
 - `PUT /api/cameras/{id}`: проверки в разделе «Камеры».
-- Если есть `frontend/dist/index.html`, сборка фронтенда раздаётся по `/`. Снимки событий сохраняются в `backend/media/` и раздаются по `/media/...`.
+- Если есть `frontend/dist/index.html`, сборка фронтенда раздаётся по `/`. Снимки событий сохраняются в `backend/media/` и раздаются по `/media/...`. При `HLS_ENABLED=1` видео камер в H.264 раздаётся статикой по `/hls/<camera_id>/index.m3u8` из `HLS_DIR` (раздел «Показ видео»).
 
 ## Камеры
 
@@ -551,6 +554,20 @@ set -a; source deploy/env.demo; set +a
 - Размытие (`BLUR_FACES=1`): по интерполированным трекам и по людям из детекций результатов в пределах `1 / fps` от кадра, в том числе ещё без подтверждённого трека. Если у камеры из `TILED_CAMERAS` или `live_*` нет результатов в пределах `2 / fps` от кадра, размываются верхние 40 % кадра.
 - Общий MJPEG сохраняется: один JPEG на кадр показа для всех зрителей. `/frame` — тот же кадр с размытием, без разметки.
 - Канал, замер на Mac с `deploy/env.demo` (`STREAM_WIDTH=960`, `STREAM_QUALITY=70`, `STREAM_FPS=10`): JPEG `/stream` `demo_reel` в среднем 36 КБ, около 2.9 Мбит/с на зрителя; `live_1` 86 КБ, около 7.1 Мбит/с. До BE-18 кадр трансляции 1228×720 весил около 475 КБ, около 57 Мбит/с при 15 кадрах/с.
+
+### HLS (`HLS_ENABLED=1`)
+
+- На камеру один поток бэкенда раз в `1 / STREAM_FPS` берёт тот же кадр показа, что идёт в MJPEG (`show_frame` в `backend/app.py`: задержка `D`, ширина `STREAM_WIDTH`, размытие, разметка), и пишет его в `ffmpeg` (`backend/hls.py`, `HlsWriter`). Если новый кадр показа не пришёл, повторяется прежний: частота кадров в H.264 постоянная. Запись идёт независимо от зрителей.
+- `ffmpeg`: `libx264`, `veryfast`, `zerolatency`, GOP `2 × STREAM_FPS`, `HLS_BITRATE`, сегменты по 2 с, в плейлисте 6, старые удаляются. При падении `ffmpeg` перезапускается не чаще раза в 5 с, в лог одна строка. Сегменты прошлого запуска удаляются при старте.
+- `/hls/<camera_id>/index.m3u8` и `seg_*.ts` — статика, как `/media`: плейлист с `Cache-Control: no-cache`, сегменты с `max-age=60`. На стенде их отдаёт Caddy напрямую (`deploy/Caddyfile`).
+- Фронтенд (`frontend/src/components/LiveVideo.tsx`): `HEAD` плейлиста; при 200 — `<video>` (Safari и iOS сами, остальные через `hls.js`), при ошибке `hls.js` или 15 с без воспроизведения — прежний MJPEG `/stream`. В сетке «Монитор» вместо потоков кадр `/frame` раз в 2 с.
+- Задержка HLS относительно MJPEG 3–6 с; рамки вшиты в кадр, тревоги идут по WebSocket.
+- Замер на Mac, `deploy/env.demo` (1280 px, 15 кадров/с, `1800k`): сегмент `demo_reel` — H.264 High 1280×720, 15 кадров/с, около 2.2 Мбит/с. `scripts/load_test.py`: 50 зрителей HLS — 111 Мбит/с суммарно, 2.2 Мбит/с на зрителя, без ошибок; 10 зрителей MJPEG — 8.2 Мбит/с на зрителя.
+
+```bash
+python scripts/load_test.py --base http://127.0.0.1:8000 --camera demo_reel --viewers 50 --seconds 60 --mode hls --pid <PID>
+python scripts/load_test.py --camera demo_reel --viewers 10 --seconds 60 --mode mjpeg
+```
 
 Проверки: `scripts/check_demo.py`, `stream_sync` (рамка движущегося человека при ответе детектора через 1 с) и `blur_new_person` (голова размыта на первом кадре с новым человеком).
 

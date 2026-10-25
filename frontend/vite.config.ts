@@ -8,6 +8,7 @@ const proxy = {
   '/api': { target: BACKEND, changeOrigin: true },
   '/ws': { target: BACKEND, changeOrigin: true, ws: true },
   '/media': { target: BACKEND, changeOrigin: true },
+  '/hls': { target: BACKEND, changeOrigin: true },
 }
 
 export default defineConfig({

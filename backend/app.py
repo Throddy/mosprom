@@ -26,6 +26,7 @@ from backend.fixtures import gray_frame, make_event, save_snapshot, seed_events
 from backend.hub import STATUSES, Hub, Store, to_json
 from backend.pipeline import Pipeline, stream_fps, tiled_cameras
 from backend.privacy import blur_enabled, blur_people, blur_top
+from backend.hls import HlsWriter, hls_dir, hls_enabled
 from backend.threads import limit_threads
 from backend.validation import sanitize, validate_camera
 from core.schemas import CameraConfig, Detection, Event, RuleConfig, Zone
@@ -141,6 +142,15 @@ def scale_view(frame: np.ndarray, items: list[list[dict]], width: int) -> tuple[
     return img, out
 
 
+class HlsFiles(StaticFiles):
+    """Статика HLS: плейлист без кэша, сегменты на 60 с."""
+
+    def file_response(self, full_path, *args, **kwargs):
+        response = super().file_response(full_path, *args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache" if str(full_path).endswith(".m3u8") else "max-age=60"
+        return response
+
+
 def create_app() -> FastAPI:
     use_pipeline = os.environ.get("PIPELINE", "1") == "1"
     db = EventDB(os.environ.get("DB_PATH") or DEFAULT_DB_PATH) if use_pipeline else EventDB(":memory:")
@@ -211,6 +221,40 @@ def create_app() -> FastAPI:
             except Exception:
                 log.exception("камера %s: событие %s не закрыто", camera_id, event.id)
 
+    hls_stop = threading.Event()
+    hls_threads: list[threading.Thread] = []
+
+    def hls_loop(pipeline: Pipeline, camera_id: str) -> None:
+        """HLS камеры: кадр показа раз в 1/STREAM_FPS, независимо от зрителей. Если новый кадр показа
+        не пришёл, повторяется прежний: ffmpeg получает кадры с постоянной частотой."""
+        fps = max(stream_fps(), 1.0)
+        period = 1.0 / fps
+        writer = None
+        last_ts, last_img = None, None
+        next_at = time.monotonic()
+        try:
+            while not hls_stop.is_set():
+                camera = store.cameras.get(camera_id)
+                if camera is None:
+                    break
+                try:
+                    view = pipeline.view(camera_id)
+                    if view is not None and view["ts"] != last_ts:
+                        last_ts = view["ts"]
+                        last_img = show_frame(camera_id, camera, view, pipeline.snapshot(camera_id))
+                    if last_img is not None:
+                        if writer is None:
+                            h, w = last_img.shape[:2]
+                            writer = HlsWriter(camera_id, w, h, fps, hls_dir() / camera_id)
+                        writer.write(last_img)
+                except Exception:
+                    log.exception("hls %s: ошибка кадра", camera_id)
+                next_at = max(next_at + period, time.monotonic() - period)
+                hls_stop.wait(max(0.0, next_at - time.monotonic()))
+        finally:
+            if writer is not None:
+                writer.close()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         state["loop"] = asyncio.get_running_loop()
@@ -224,11 +268,20 @@ def create_app() -> FastAPI:
             state["detector"] = create_detector()
             state["pipeline"] = Pipeline(list(store.cameras.values()), state["detector"], on_result)
             state["pipeline"].start()
+            if hls_enabled():
+                for camera_id in store.cameras:
+                    t = threading.Thread(target=hls_loop, args=(state["pipeline"], camera_id),
+                                         name=f"hls-{camera_id}", daemon=True)
+                    hls_threads.append(t)
+                    t.start()
         else:
             task = asyncio.create_task(fixture_loop())
         yield
         if task is not None:
             task.cancel()
+        hls_stop.set()
+        for t in hls_threads:
+            t.join(timeout=5)
         if state["pipeline"] is not None:
             state["pipeline"].stop()
         state["loop"] = None
@@ -315,13 +368,18 @@ def create_app() -> FastAPI:
             return Response(encode_jpeg(img), media_type="image/jpeg")
         return Response(encode_jpeg(camera_frame(camera)), media_type="image/jpeg")
 
-    def render(camera_id: str, camera: CameraConfig, view: dict, snap: dict) -> bytes:
-        """Кадр показа с треками на его ts (Pipeline.view), один JPEG на всех зрителей."""
+    def show_frame(camera_id: str, camera: CameraConfig, view: dict, snap: dict) -> np.ndarray:
+        """Кадр показа с треками на его ts (Pipeline.view): ширина STREAM_WIDTH, размытие, разметка.
+        Один и тот же для MJPEG и HLS."""
         info = f"{camera_id} fps {snap['fps']:.1f} lat {snap['latency_ms']:.0f} ms delay {view['delay']:.1f} s"
         img, (tracks, people) = scale_view(view["frame"], [view["tracks"], view["people"]], stream_width())
         # Размытие голов до рисования разметки и до сжатия
         img = privacy_view(camera_id, img, tracks, people, view["covered"])
-        jpeg = encode_jpeg(draw_tracks(img, tracks, camera.zones, info), stream_quality())
+        return draw_tracks(img, tracks, camera.zones, info)
+
+    def render(camera_id: str, camera: CameraConfig, view: dict, snap: dict) -> bytes:
+        """JPEG кадра показа, один на всех зрителей MJPEG."""
+        jpeg = encode_jpeg(show_frame(camera_id, camera, view, snap), stream_quality())
         mjpeg["encodes"][camera_id] = mjpeg["encodes"].get(camera_id, 0) + 1
         return jpeg
 
@@ -451,6 +509,10 @@ def create_app() -> FastAPI:
             hub.remove(ws)
 
     app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
+    if hls_enabled():
+        # /hls/<camera_id>/index.m3u8 и сегменты; на стенде их раздаёт Caddy напрямую
+        hls_dir().mkdir(parents=True, exist_ok=True)
+        app.mount("/hls", HlsFiles(directory=hls_dir()), name="hls")
     if (DIST_DIR / "index.html").exists():
         app.mount("/", StaticFiles(directory=DIST_DIR, html=True), name="frontend")
 
