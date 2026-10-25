@@ -1,4 +1,5 @@
-"""Чтение и запись камер: configs/cameras.yaml в git, изменения из интерфейса в configs/cameras.local.yaml."""
+"""Чтение и запись камер: базовый файл в git (CAMERAS_BASE, по умолчанию configs/cameras.yaml),
+изменения из интерфейса в файле правок (CAMERAS_PATH, по умолчанию configs/cameras.local.yaml)."""
 import os
 import tempfile
 from pathlib import Path
@@ -17,10 +18,19 @@ def cameras_path() -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
+def base_path() -> Path:
+    """CAMERAS_BASE: базовый файл камер, если файла правок ещё нет."""
+    value = os.environ.get("CAMERAS_BASE")
+    if not value:
+        return CAMERAS_PATH
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
+
+
 def load_active() -> list[CameraConfig]:
-    """Камеры из cameras_path(), если файл есть, иначе из configs/cameras.yaml."""
+    """Камеры из файла правок cameras_path(), если он есть, иначе из базового base_path()."""
     path = cameras_path()
-    return load_cameras(path if path.exists() else CAMERAS_PATH)
+    return load_cameras(path if path.exists() else base_path())
 
 
 def load_cameras(path: Path = CAMERAS_PATH) -> list[CameraConfig]:

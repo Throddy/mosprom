@@ -129,6 +129,15 @@ class EventDB:
         result["by_day"] = dict(sorted(result["by_day"].items()))
         return result
 
+    def delete_closed_before(self, ts: float) -> list[str]:
+        """Удаляет закрытые события с ts_confirm раньше ts. Возвращает пути их снимков в /media."""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT snapshot FROM events WHERE ts_confirm < ? AND ts_end IS NOT NULL", (ts,)).fetchall()
+            self.conn.execute("DELETE FROM events WHERE ts_confirm < ? AND ts_end IS NOT NULL", (ts,))
+            self.conn.commit()
+            return [r[0] for r in rows if r[0]]
+
     def close_open(self, ts: float) -> int:
         # ts_end неизвестен: событие было открыто при остановке сервиса, берётся момент тревоги
         with self.lock:

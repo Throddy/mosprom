@@ -144,6 +144,31 @@ curl -sI https://sokol.157.22.134.21.sslip.io/hls/demo_reel/index.m3u8 | head -1
 
 Ожидается `HTTP/2 404`.
 
+## Правка камер на стенде
+
+Стенд в режиме «только просмотр» (`READ_ONLY=1`). С `ADMIN_LOCAL=1` изменения разрешены только запросам через SSH-туннель: они приходят на `127.0.0.1` без заголовков прокси.
+
+1. На Mac: `ssh -p <порт> -L 8000:127.0.0.1:8000 root@157.22.134.21`
+2. Открыть `http://127.0.0.1:8000`: редактор зон и правил работает. Изменения пишутся в `/opt/mosprom/configs/cameras.demo.local.yaml` (`CAMERAS_PATH`), базовый `configs/cameras.demo.yaml` из git не меняется.
+3. Сбросить правки:
+
+```bash
+rm /opt/mosprom/configs/cameras.demo.local.yaml
+systemctl restart mosprom
+```
+
+## Нагрузочный тест на сервере
+
+40 зрителей HLS одной камеры и 10 зрителей «Монитора» через внешний адрес, 60 с:
+
+```bash
+cd /opt/mosprom && sudo -u mosprom .venv/bin/python scripts/load_test.py --base https://sokol.157.22.134.21.sslip.io --camera demo_reel --mode mix --viewers 40 --monitor 10 --seconds 60 --pid $(systemctl show -p MainPID --value mosprom)
+```
+
+Итог: Мбит/с суммарно, на зрителя HLS и на зрителя «Монитора», ошибки, p95 времени ответа API «Монитора», CPU бэкенда. Тест с самого сервера идёт по петле и не упирается в порт.
+
+Канал сервера проверяется только внешним тестом; оценка — Мбит/с на зрителя × число зрителей ≤ 90 Мбит/с.
+
 ## Подбор на сервере
 
 Значения `ORT_THREADS`, `DETECTOR_WORKERS`, `TILED_WORKERS` в `deploy/env.demo` — ориентир с Mac. На сервере они подбираются замером: на время замера сервис останавливается, чтобы не делить с ним процессор.

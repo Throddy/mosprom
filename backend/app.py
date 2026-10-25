@@ -166,9 +166,19 @@ def create_app() -> FastAPI:
     feeds: dict[str, dict] = {}
     mjpeg = {"encodes": {}}
 
-    def check_writable() -> None:
-        if read_only:
-            raise HTTPException(403, "Демо-стенд: только просмотр")
+    admin_local = os.environ.get("ADMIN_LOCAL", "0") == "1"
+
+    def check_writable(request: Request) -> None:
+        """READ_ONLY: изменения запрещены. ADMIN_LOCAL=1 разрешает их запросам через SSH-туннель:
+        клиент 127.0.0.1 или ::1 и нет заголовков прокси (Caddy всегда добавляет X-Forwarded-For)."""
+        if not read_only:
+            return
+        host = request.client.host if request.client else ""
+        proxied = any(h in request.headers for h in ("x-forwarded-for", "x-real-ip", "forwarded"))
+        if admin_local and host in ("127.0.0.1", "::1") and not proxied:
+            log.info("%s %s: admin local", request.method, sanitize(request.url.path))
+            return
+        raise HTTPException(403, "Демо-стенд: только просмотр")
     interval = float(os.environ.get("FIXTURE_WS_INTERVAL", "10"))
     detector_backend = os.environ.get("DETECTOR_BACKEND") or "onnx"
     state = {"detector": None, "pipeline": None, "loop": None}
@@ -220,6 +230,30 @@ def create_app() -> FastAPI:
                          event.track_id, event.ts_end)
             except Exception:
                 log.exception("камера %s: событие %s не закрыто", camera_id, event.id)
+
+    keep_minutes = float(os.environ.get("EVENTS_KEEP_MINUTES", "0") or 0)
+
+    def cleanup_events(now: float) -> int:
+        """Закрытые события с ts_confirm старше now − EVENTS_KEEP_MINUTES и их снимки."""
+        snapshots_rel = db.delete_closed_before(now - keep_minutes * 60.0)
+        for rel in snapshots_rel:
+            path = (MEDIA_DIR / rel).resolve()
+            if MEDIA_DIR.resolve() in path.parents:
+                path.unlink(missing_ok=True)
+        return len(snapshots_rel)
+
+    async def cleanup_loop() -> None:
+        """Раз в 60 с удаляет старые закрытые события; в лог не чаще раза в 5 минут."""
+        removed, logged_at = 0, time.monotonic()
+        while True:
+            try:
+                removed += await asyncio.to_thread(cleanup_events, time.time())
+            except Exception:
+                log.exception("очистка старых событий")
+            if removed and time.monotonic() - logged_at >= 300:
+                log.info("удалено старых событий: %d за %.0f мин", removed, (time.monotonic() - logged_at) / 60)
+                removed, logged_at = 0, time.monotonic()
+            await asyncio.sleep(60)
 
     hls_stop = threading.Event()
     hls_threads: list[threading.Thread] = []
@@ -276,7 +310,10 @@ def create_app() -> FastAPI:
                     t.start()
         else:
             task = asyncio.create_task(fixture_loop())
+        cleanup = asyncio.create_task(cleanup_loop()) if keep_minutes > 0 else None
         yield
+        if cleanup is not None:
+            cleanup.cancel()
         if task is not None:
             task.cancel()
         hls_stop.set()
@@ -327,8 +364,8 @@ def create_app() -> FastAPI:
         return [to_json(c) for c in store.cameras.values()]
 
     @app.put("/api/cameras/{camera_id}")
-    def put_camera(camera_id: str, body: dict = Body(...)):
-        check_writable()
+    def put_camera(camera_id: str, request: Request, body: dict = Body(...)):
+        check_writable(request)
         # Чтение, изменение и запись камер под одной блокировкой: одновременные PUT не теряют изменения
         with cameras_lock:
             get_camera(camera_id)
@@ -356,7 +393,7 @@ def create_app() -> FastAPI:
             return to_json(cfg)
 
     @app.get("/api/cameras/{camera_id}/frame")
-    def frame(camera_id: str):
+    def frame(camera_id: str, w: int | None = Query(None, ge=160, le=1920)):
         camera = get_camera(camera_id)
         pipeline = state["pipeline"]
         if pipeline is not None:
@@ -365,8 +402,16 @@ def create_app() -> FastAPI:
             if view is None:
                 raise HTTPException(503, "кадра ещё нет")
             img = privacy_view(camera_id, view["frame"], view["tracks"], view["people"], view["covered"])
+        else:
+            img = camera_frame(camera)
+        if w is None:
             return Response(encode_jpeg(img), media_type="image/jpeg")
-        return Response(encode_jpeg(camera_frame(camera)), media_type="image/jpeg")
+        # Лёгкое превью: ширина w с сохранением пропорций, JPEG 70
+        h0, w0 = img.shape[:2]
+        if w0 != w:
+            img = cv2.resize(img, (w, max(int(round(h0 * w / w0)), 1)),
+                             interpolation=cv2.INTER_AREA if w < w0 else cv2.INTER_LINEAR)
+        return Response(encode_jpeg(img, 70), media_type="image/jpeg")
 
     def show_frame(camera_id: str, camera: CameraConfig, view: dict, snap: dict) -> np.ndarray:
         """Кадр показа с треками на его ts (Pipeline.view): ширина STREAM_WIDTH, размытие, разметка.
@@ -471,8 +516,8 @@ def create_app() -> FastAPI:
         return {"items": items, "total": total}
 
     @app.patch("/api/events/{event_id}")
-    async def patch_event(event_id: str, body: EventPatch):
-        check_writable()
+    async def patch_event(event_id: str, body: EventPatch, request: Request):
+        check_writable(request)
         if body.status not in STATUSES:
             raise HTTPException(400, f"unknown status {body.status}")
         view = store.set_status(event_id, body.status, body.comment)
