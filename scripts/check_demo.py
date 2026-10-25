@@ -299,6 +299,146 @@ def stream_fps():
         thread.join(15)
 
 
+BLUE = (255, 0, 0)
+
+
+class BlueDetector:
+    """Заглушка детектора: человек — синие пиксели кадра, ответ с задержкой delay с."""
+    name = "stub"
+
+    def __init__(self, delay: float, head_share: float = 0.0):
+        self.delay = delay
+        self.head_share = head_share  # доля бокса над синим прямоугольником: голова
+
+    def infer(self, frames):
+        time.sleep(self.delay)
+        out = []
+        for frame in frames:
+            mask = (frame[:, :, 0] > 200) & (frame[:, :, 1] < 60) & (frame[:, :, 2] < 60)
+            ys, xs = np.nonzero(mask)
+            if len(xs) < 50:
+                out.append([])
+                continue
+            y1, y2 = float(ys.min()), float(ys.max())
+            head = (y2 - y1) * self.head_share / (1 - self.head_share) if self.head_share else 0.0
+            out.append([Detection(cls="person", conf=0.9, bbox=(float(xs.min()), y1 - head, float(xs.max()), y2))])
+        return out
+
+
+def synthetic_server(frames: list, camera_fps: float, detector, extra_env: dict):
+    """uvicorn с одной камерой live_s на папке кадров и заглушкой детектора. Возвращает (server, thread, port)."""
+    import cv2
+    import uvicorn
+    import yaml
+
+    import ml
+    from backend.app import create_app
+    folder = Path(tempfile.mkdtemp(prefix="frames_", dir=TMP))
+    for i, frame in enumerate(frames):
+        cv2.imwrite(str(folder / f"{i:04d}.png"), frame)
+    cams = folder / "cameras.yaml"
+    cams.write_text(yaml.safe_dump({"cameras": [{"id": "live_s", "name": "s", "source": str(folder),
+                                                 "fps": camera_fps, "zones": [], "rules": []}]}), encoding="utf-8")
+    os.environ.update(PIPELINE="1", DETECTOR_BACKEND="onnx", MAX_STREAMS="30", CAMERAS_PATH=str(cams),
+                      STREAM_WIDTH="0", STREAM_DELAY="auto", TILED_CAMERAS="", SOURCE_LOOP="1", **extra_env)
+    ml.create_detector = lambda *a, **k: detector
+    app = create_app()
+    port = free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 30
+    while not server.started and time.time() < deadline:
+        time.sleep(0.2)
+    return server, thread, port
+
+
+def decode(jpeg: bytes):
+    import cv2
+    return cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+
+
+def stream_sync():
+    # Человек — синий прямоугольник 400x200, сдвиг 20 px на кадр показа (STREAM_FPS=5), камера 1 кадр/с,
+    # детектор отвечает через 1 с. Рамка (зелёная) в кадре /stream совпадает с человеком
+    import ml
+    original = ml.create_detector
+    frames = []
+    for i in range(70):
+        f = np.full((360, 1900, 3), 40, np.uint8)
+        x = 50 + 20 * i
+        f[100:300, x:x + 400] = BLUE
+        frames.append(f)
+    server, thread, port = synthetic_server(frames, 1, BlueDetector(1.0), {"STREAM_FPS": "5", "BLUR_FACES": "0"})
+    try:
+        time.sleep(4.0)
+        jpegs: list = []
+        mjpeg_frames(f"http://127.0.0.1:{port}/api/cameras/live_s/stream", 6.0, jpegs)
+        errors = []
+        for jpeg in jpegs:
+            img = decode(jpeg).astype(int)
+            blue = (img[:, :, 0] > 180) & (img[:, :, 1] < 90) & (img[:, :, 2] < 90)
+            green = (img[:, :, 1] > 180) & (img[:, :, 0] < 90) & (img[:, :, 2] < 90)
+            if blue.sum() < 1000 or green.sum() < 100:
+                continue
+            bx = np.nonzero(blue)[1]
+            gx = np.nonzero(green)[1]
+            errors.append(abs((gx.min() + gx.max()) / 2 - (bx.min() + bx.max()) / 2))
+        print(f"  кадров {len(jpegs)}, с рамкой {len(errors)}, расхождение центров: "
+              f"макс {max(errors) if errors else None} px")
+        expect(len(errors) >= 10, f"frames with box {len(errors)}")
+        expect(max(errors) < 10, f"max center error {max(errors):.1f} px")
+    finally:
+        server.should_exit = True
+        thread.join(15)
+        ml.create_detector = original
+
+
+def blur_new_person():
+    # Фон без людей 6 с, затем человек: синее тело и голова-шахматка сверху (22 % бокса).
+    # На первом кадре /stream, где человек есть, голова пикселизирована
+    import ml
+    original = ml.create_detector
+    # Серая шахматка: без синих пикселей, чтобы заглушка не приняла голову за тело
+    gray = checkerboard()[:60, :80, 0]
+    board = np.dstack([gray, gray, gray])
+    frames = []
+    for i in range(80):
+        # Голова 60 px — верхние 22 % бокса высотой 273 px, как в privacy.head_box без точек
+        f = np.full((480, 640, 3), 40, np.uint8)
+        if i >= 30:
+            f[140:200, 280:360] = board
+            f[200:413, 280:360] = BLUE
+        frames.append(f)
+    server, thread, port = synthetic_server(frames, 2, BlueDetector(0.3, head_share=60 / 273),
+                                            {"STREAM_FPS": "5", "BLUR_FACES": "1"})
+    try:
+        jpegs: list = []
+        mjpeg_frames(f"http://127.0.0.1:{port}/api/cameras/live_s/stream", 12.0, jpegs)
+        first = None
+        for jpeg in jpegs:
+            img = decode(jpeg).astype(int)
+            blue = (img[:, :, 0] > 180) & (img[:, :, 1] < 90) & (img[:, :, 2] < 90)
+            if blue.sum() > 1000:
+                first = img
+                break
+        expect(first is not None, "person never shown")
+        # Резкость: средний перепад соседних пикселей канала 0. Шахматка меняется каждые 4 px, после
+        # пикселизации — только на границах блоков. Сравнение с неразмытой головой после того же JPEG
+        import cv2
+
+        def sharpness(region):
+            return float(np.abs(np.diff(region[:, :, 0].astype(int), axis=1)).mean())
+        raw = sharpness(decode(cv2.imencode(".jpg", board, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()))
+        head = sharpness(first[140:200, 280:360])
+        print(f"  первый кадр с человеком: резкость головы {head:.1f}, без размытия {raw:.1f}")
+        expect(head < 0.7 * raw, f"head sharpness {head:.1f}, raw {raw:.1f}")
+    finally:
+        server.should_exit = True
+        thread.join(15)
+        ml.create_detector = original
+
+
 if __name__ == "__main__":
     check("read_only", read_only)
     check("blur", blur)
@@ -309,4 +449,6 @@ if __name__ == "__main__":
     check("remote_hosts", remote_hosts)
     check("shared_mjpeg", shared_mjpeg)
     check("stream_fps", stream_fps)
+    check("stream_sync", stream_sync)
+    check("blur_new_person", blur_new_person)
     sys.exit(1 if failed else 0)

@@ -8,8 +8,13 @@
 create_detector(<бэкенд>, tiles=True). Если бэкенд плитки не поддерживает (ValueError), эти камеры
 переходят к обычным обработчикам.
 
-Камера читает кадры с частотой показа max(fps камеры, STREAM_FPS): последний кадр идёт в /stream.
-Детектор получает кадр камеры не чаще fps камеры; правила и ts событий считаются только по этим кадрам.
+Камера читает кадры с частотой показа max(fps камеры, STREAM_FPS). Детектор получает кадр камеры не чаще fps
+камеры; правила и ts событий считаются только по этим кадрам.
+
+Показ (/stream, /frame) идёт с задержкой D: кадры показа хранятся в буфере за последние STREAM_BUFFER_MAX с,
+результаты детектора — по ts обработанного кадра. view() отдаёт кадр с ts ≈ now − D и треки, интерполированные
+между результатами до и после этого кадра. D = p90 задержки обработки за 20 кадров + 1/fps + 0.2 с
+(STREAM_DELAY=auto) или число секунд из STREAM_DELAY, не больше STREAM_BUFFER_MAX.
 """
 import logging
 import os
@@ -17,7 +22,10 @@ import threading
 import time
 from collections import deque
 
+import numpy as np
+
 from backend.sources import FrameSource, RtspSource, open_source
+from backend.threads import limit_threads
 from core.schemas import CameraConfig
 from logic import Engine, Result
 
@@ -30,6 +38,20 @@ LATENCY_WINDOW = 10
 
 def stream_fps() -> float:
     return float(os.environ.get("STREAM_FPS", "15"))
+
+
+def stream_buffer_max() -> float:
+    return float(os.environ.get("STREAM_BUFFER_MAX", "12"))
+
+
+def stream_delay() -> float | None:
+    """STREAM_DELAY: число секунд или None для auto."""
+    value = os.environ.get("STREAM_DELAY", "auto").strip()
+    return None if value in ("", "auto") else float(value)
+
+
+RESULTS_KEEP = 30
+DELAY_WINDOW = 20
 
 
 def _workers(name: str) -> int:
@@ -71,6 +93,10 @@ class _Camera:
         self.engine = Engine(cfg)
         self.processed = deque()  # время обработки кадров за последние FPS_WINDOW с
         self.latencies = deque(maxlen=LATENCY_WINDOW)
+        self.buffer: deque = deque()  # (ts, frame) кадров показа за последние секунды
+        self.buffer_last = 0.0
+        self.results: deque = deque(maxlen=RESULTS_KEEP)  # {"ts", "tracks"} по ts обработанного кадра
+        self.delays: deque = deque(maxlen=DELAY_WINDOW)  # задержка обработки, с
         self.reopen = threading.Event()
         self.source: FrameSource | None = None
         self.thread: threading.Thread | None = None
@@ -113,6 +139,7 @@ class Pipeline:
         return detectors
 
     def start(self) -> None:
+        limit_threads()
         self.stopped.clear()
         wanted = tiled_cameras()
         for camera_id in wanted:
@@ -180,6 +207,7 @@ class Pipeline:
                     with cam.lock:
                         cam.display = item
                         cam.online = True
+                        self._buffer(cam, item)
                         # Детектору — не чаще fps камеры: следующий срок сдвигается на период камеры
                         period = 1.0 / cam.cfg.fps if cam.cfg.fps > 0 else 0.0
                         if item[0] >= cam.next_due - 1e-6:
@@ -234,7 +262,13 @@ class Pipeline:
                 done = time.time()
                 # Время конца обработки кадра для замера задержки до тревоги (BE-10)
                 result.t_done = done
+                tracks = _track_views(result.tracks, cam.engine)
+                # Люди из детекций, в том числе ещё без подтверждённого трека: для размытия
+                people = [{"bbox": tuple(float(v) for v in d.bbox), "kpts": d.kpts}
+                          for d in detections if d.cls == "person"]
                 with cam.lock:
+                    cam.results.append({"ts": ts, "tracks": tracks, "people": people})
+                    cam.delays.append(done - ts)
                     cam.frame = frame
                     cam.detections = detections
                     cam.tracks = result.tracks
@@ -248,6 +282,53 @@ class Pipeline:
                         self.on_result(cam.cfg.id, ts, frame, result)
                     except Exception:
                         log.exception("камера %s: ошибка on_result", cam.cfg.id)
+
+    def _buffer(self, cam: _Camera, item: tuple) -> None:
+        """Кадр в буфер показа не чаще STREAM_FPS; хранится не дольше D + 1 с и не больше STREAM_BUFFER_MAX."""
+        ts = item[0]
+        if ts - cam.buffer_last >= 0.9 / max(stream_fps(), 1.0):
+            cam.buffer.append(item)
+            cam.buffer_last = ts
+        keep = min(stream_buffer_max(), self._delay(cam) + 1.0)
+        while len(cam.buffer) > 1 and cam.buffer[0][0] < ts - keep:
+            cam.buffer.popleft()
+
+    def _delay(self, cam: _Camera) -> float:
+        fixed = stream_delay()
+        if fixed is not None:
+            return min(max(fixed, 0.0), stream_buffer_max())
+        period = 1.0 / cam.cfg.fps if cam.cfg.fps > 0 else 0.0
+        p90 = float(np.percentile(list(cam.delays), 90)) if cam.delays else 0.0
+        return min(p90 + period + 0.2, stream_buffer_max())
+
+    def view(self, camera_id: str, now: float | None = None) -> dict | None:
+        """Кадр показа с ts ≈ now − D и треки на этот ts. None, пока кадров нет.
+
+        covered — есть результат детектора в пределах 2/fps от ts кадра; people — люди из детекций результатов
+        в пределах 1/fps, для размытия."""
+        cam = self.cams[camera_id]
+        now = time.time() if now is None else now
+        with cam.lock:
+            if not cam.buffer:
+                return None
+            delay = self._delay(cam)
+            frames = list(cam.buffer)
+            results = list(cam.results)
+            fps = cam.cfg.fps
+        target = now - delay
+        chosen = frames[0]
+        for item in frames:
+            if item[0] <= target:
+                chosen = item
+            else:
+                break
+        ts, frame = chosen
+        period = 1.0 / fps if fps > 0 else 1.0
+        tracks = interpolate(results, ts, period)
+        covered = any(abs(r["ts"] - ts) <= 2 * period for r in results)
+        # Для размытия — люди из результатов до и после кадра в пределах 1/fps, включая неподтверждённые треки
+        people = [p for r in results if abs(r["ts"] - ts) <= period for p in r["people"]]
+        return {"ts": ts, "frame": frame, "tracks": tracks, "people": people, "covered": covered, "delay": delay}
 
     def snapshot(self, camera_id: str) -> dict:
         cam = self.cams[camera_id]
@@ -265,6 +346,7 @@ class Pipeline:
                 "ts": cam.ts,
                 "display": cam.display[1] if cam.display else None,
                 "display_ts": cam.display[0] if cam.display else None,
+                "delay": self._delay(cam),
             }
 
     def update_camera(self, cfg: CameraConfig) -> None:
@@ -279,3 +361,61 @@ class Pipeline:
         if old.source != cfg.source or old.fps != cfg.fps:
             cam.reopen.set()
             cam.interrupt()
+
+
+def _track_views(tracks, engine) -> list[dict]:
+    """Треки результата для показа: бокс, точки из состояния трека движка, активные правила."""
+    out = []
+    for t in tracks:
+        state = engine.tracks.get(t.track_id)
+        kpts = getattr(state, "kpts", None)
+        kpts = np.array(kpts, dtype=float) if isinstance(kpts, np.ndarray) and kpts.shape == (17, 3) else None
+        out.append({"id": t.track_id, "cls": t.cls, "bbox": tuple(float(v) for v in t.bbox), "kpts": kpts,
+                    "active": list(t.active)})
+    return out
+
+
+def _lerp(a: dict, b: dict, alpha: float) -> dict:
+    bbox = tuple(x + (y - x) * alpha for x, y in zip(a["bbox"], b["bbox"]))
+    kpts = None
+    if a["kpts"] is not None and b["kpts"] is not None:
+        kpts = a["kpts"].copy()
+        kpts[:, :2] = a["kpts"][:, :2] + (b["kpts"][:, :2] - a["kpts"][:, :2]) * alpha
+        kpts[:, 2] = np.minimum(a["kpts"][:, 2], b["kpts"][:, 2])
+    else:
+        kpts = (a if alpha < 0.5 else b)["kpts"]
+    near = a if alpha < 0.5 else b
+    return {"id": a["id"], "cls": a["cls"], "bbox": bbox, "kpts": kpts, "active": near["active"]}
+
+
+def interpolate(results: list[dict], ts: float, period: float) -> list[dict]:
+    """Треки на момент ts по двум результатам вокруг него.
+
+    Трек из обоих результатов — линейная интерполяция бокса и точек по времени. Трек только из одного —
+    берётся, если тот результат не дальше period от ts. Если результата после ts нет — последний результат,
+    если он не старше period, иначе без треков."""
+    prev = next_ = None
+    for r in results:
+        if r["ts"] <= ts:
+            prev = r
+        elif next_ is None or r["ts"] < next_["ts"]:
+            next_ = r
+    if prev is not None and next_ is not None:
+        span = next_["ts"] - prev["ts"]
+        alpha = (ts - prev["ts"]) / span if span > 0 else 0.0
+        a = {t["id"]: t for t in prev["tracks"]}
+        b = {t["id"]: t for t in next_["tracks"]}
+        out = []
+        for tid in dict.fromkeys(list(a) + list(b)):
+            if tid in a and tid in b:
+                out.append(_lerp(a[tid], b[tid], alpha))
+            elif tid in a and ts - prev["ts"] <= period:
+                out.append(a[tid])
+            elif tid in b and next_["ts"] - ts <= period:
+                out.append(b[tid])
+        return out
+    if prev is not None:
+        return list(prev["tracks"]) if ts - prev["ts"] <= period else []
+    if next_ is not None:
+        return list(next_["tracks"]) if next_["ts"] - ts <= period else []
+    return []

@@ -225,6 +225,19 @@ def repeat_continue_open():
     expect(not run.closed, f"{len(run.closed)} closed")
 
 
+def repeat_cap():
+    # Каждые 5 с: нарушение 2 с, затем 3 с без детекций (трек теряется, следующий получает новый id), 90 с.
+    # Продолжение повторами ограничено REPEAT_MAX = 60 с от ts_confirm, поэтому ровно 2 события
+    run = Run()
+    for _ in range(18):
+        run.frames(2.0, lambda: [person(RIGHT_X)]).frames(3.0, None)
+    ids = {i for f in run.track_ids for i in f}
+    expect(len(ids) >= 10, f"track ids {sorted(ids)}")
+    expect(len(run.new) == 2, f"{len(run.new)} events")
+    gap = run.new[1].ts_confirm - run.new[0].ts_confirm
+    expect(60.0 <= gap <= 70.0, f"second event after {gap:.1f} s")
+
+
 if __name__ == "__main__":
     check("track_stable", track_stable)
     check("min_duration", min_duration)
@@ -244,4 +257,5 @@ if __name__ == "__main__":
     check("repeat_other_camera", repeat_other_camera)
     check("repeat_count_once", repeat_count_once)
     check("repeat_continue_open", repeat_continue_open)
+    check("repeat_cap", repeat_cap)
     sys.exit(1 if failed else 0)

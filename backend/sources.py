@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 from backend import ivideon
-from backend.validation import sanitize
+from backend.validation import remote_allowed, sanitize
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
@@ -214,8 +214,13 @@ def hls_variant(url: str, max_height: int = 720) -> str:
     return hls_variant_size(url, max_height)[0]
 
 
+MAX_VARIANT_WIDTH = 1920  # вариант шире выбирается, только если уже нет; кадры тогда уменьшаются до 1280
+SCALE_WIDTH = 1280
+
+
 def hls_variant_size(url: str, max_height: int = 720) -> tuple[str, int, int]:
-    """Как hls_variant, плюс ширина и высота варианта из RESOLUTION; 0, 0 — если не указаны."""
+    """Как hls_variant, плюс ширина и высота варианта из RESOLUTION; 0, 0 — если не указаны.
+    Варианты шире MAX_VARIANT_WIDTH берутся, только если других нет."""
     request = urllib.request.Request(url, headers={"User-Agent": ivideon.HEADERS["User-Agent"]})
     with urllib.request.urlopen(request, timeout=15, context=ivideon._context()) as r:
         text = r.read(65536).decode("utf-8", "replace")
@@ -230,8 +235,9 @@ def hls_variant_size(url: str, max_height: int = 720) -> tuple[str, int, int]:
             height = None
     if not variants:
         return url, 0, 0
-    fit = [v for v in variants if 0 < v[0] <= max_height]
-    height, width, variant = max(fit) if fit else min(variants)
+    narrow = [v for v in variants if v[1] <= MAX_VARIANT_WIDTH] or variants
+    fit = [v for v in narrow if 0 < v[0] <= max_height]
+    height, width, variant = max(fit) if fit else min(narrow)
     return variant, width, height
 
 
@@ -253,6 +259,18 @@ class HlsSource(_FfmpegReader, HttpSource):
             log.warning("источник %s: плейлист HLS не прочитан: %s", sanitize(ivideon.safe(self.url)), sanitize(e))
             variant, width, height = self.url, 0, 0
         self.size = (width, height) if width and height else None
+        # Адрес варианта из плейлиста проверяется по REMOTE_HOSTS так же, как адрес источника. Вариант
+        # удалённого плейлиста — только http(s); локальный плейлист file:// (проверки) — только file://
+        master = urllib.parse.urlsplit(self.url).scheme
+        scheme = urllib.parse.urlsplit(variant).scheme
+        if master in ("http", "https"):
+            allowed = scheme in ("http", "https") and remote_allowed(variant)
+        else:
+            allowed = scheme == master
+        if variant != self.url and not allowed:
+            log.warning("источник %s: хост варианта HLS %s не входит в REMOTE_HOSTS, камера не открыта",
+                        sanitize(ivideon.safe(self.url)), sanitize(urllib.parse.urlsplit(variant).hostname))
+            return None
         return variant
 
     def _input_args(self) -> list[str]:
@@ -260,9 +278,14 @@ class HlsSource(_FfmpegReader, HttpSource):
 
     def _frame_size(self, url: str) -> tuple[int, int]:
         width, height = self.size or _probe_size(url)
+        if width <= 0 or height <= 0:
+            width, height = 1280, 720
+        if width > MAX_VARIANT_WIDTH:
+            # Ширина из плейлиста не ограничена: кадры уменьшаются в ffmpeg сразу после декодирования
+            width, height = SCALE_WIDTH, round(height * SCALE_WIDTH / width)
         if height > self.MAX_HEIGHT:
             width, height = round(width * self.MAX_HEIGHT / height), self.MAX_HEIGHT
-        return width - width % 2, height - height % 2
+        return max(width - width % 2, 2), max(height - height % 2, 2)
 
 
 def _probe_size(url: str) -> tuple[int, int]:
