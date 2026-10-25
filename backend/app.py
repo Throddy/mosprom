@@ -21,13 +21,14 @@ from pydantic import BaseModel, Field
 from backend import snapshots
 from backend.cameras import cameras_path, load_active, save_cameras
 from backend.db import EventDB
-from backend.draw import draw
+from backend.draw import draw_tracks
 from backend.fixtures import gray_frame, make_event, save_snapshot, seed_events
 from backend.hub import STATUSES, Hub, Store, to_json
-from backend.pipeline import Pipeline, stream_fps
-from backend.privacy import blur_enabled, blur_people
+from backend.pipeline import Pipeline, stream_fps, tiled_cameras
+from backend.privacy import blur_enabled, blur_people, blur_top
+from backend.threads import limit_threads
 from backend.validation import sanitize, validate_camera
-from core.schemas import CameraConfig, Event, RuleConfig, Zone
+from core.schemas import CameraConfig, Detection, Event, RuleConfig, Zone
 
 log = logging.getLogger(__name__)
 
@@ -91,8 +92,53 @@ def camera_frame(camera: CameraConfig, with_zones: bool = False) -> np.ndarray:
     return img
 
 
-def encode_jpeg(img: np.ndarray) -> bytes:
-    return cv2.imencode(".jpg", img)[1].tobytes()
+def encode_jpeg(img: np.ndarray, quality: int | None = None) -> bytes:
+    params = [cv2.IMWRITE_JPEG_QUALITY, quality] if quality else []
+    return cv2.imencode(".jpg", img, params)[1].tobytes()
+
+
+def stream_width() -> int:
+    """STREAM_WIDTH: ширина кадра /stream; 0 — исходная."""
+    return int(os.environ.get("STREAM_WIDTH", "0") or 0)
+
+
+def stream_quality() -> int:
+    return int(os.environ.get("STREAM_QUALITY", "85"))
+
+
+def privacy_view(camera_id: str, frame: np.ndarray, tracks: list[dict], people: list[dict],
+                 covered: bool) -> np.ndarray:
+    """Размытие голов по трекам кадра показа и по людям из соседних результатов детектора (новый человек
+    ещё без подтверждённого трека). Камера трансляции без результатов детектора рядом с кадром — размытие
+    верхних 40 % кадра целиком."""
+    if not blur_enabled():
+        return frame
+    heads = [Detection(cls="person", conf=1.0, bbox=t["bbox"], kpts=t["kpts"]) for t in tracks if t["cls"] == "person"]
+    heads += [Detection(cls="person", conf=1.0, bbox=p["bbox"], kpts=p["kpts"]) for p in people]
+    img = blur_people(frame, heads)
+    if not covered and (camera_id in tiled_cameras() or camera_id.startswith("live_")):
+        img = blur_top(img, 0.4)
+    return img
+
+
+def scale_view(frame: np.ndarray, items: list[list[dict]], width: int) -> tuple[np.ndarray, list[list[dict]]]:
+    """Кадр и списки боксов с точками, уменьшенные до ширины width с сохранением пропорций."""
+    h, w = frame.shape[:2]
+    if width <= 0 or w <= width:
+        return frame, items
+    k = width / w
+    img = cv2.resize(frame, (width, max(int(round(h * k)), 1)), interpolation=cv2.INTER_AREA)
+    out = []
+    for group in items:
+        scaled = []
+        for t in group:
+            kpts = t["kpts"]
+            if isinstance(kpts, np.ndarray):
+                kpts = kpts.copy()
+                kpts[:, :2] *= k
+            scaled.append({**t, "bbox": tuple(v * k for v in t["bbox"]), "kpts": kpts})
+        out.append(scaled)
+    return img, out
 
 
 def create_app() -> FastAPI:
@@ -173,6 +219,8 @@ def create_app() -> FastAPI:
             closed = db.close_open(time.time())
             log.info("закрыто открытых событий при старте: %d", closed)
             from ml import create_detector
+            # Потоки ONNX Runtime, PyTorch, OpenCV ограничиваются до создания детекторов (backend/threads.py)
+            limit_threads()
             state["detector"] = create_detector()
             state["pipeline"] = Pipeline(list(store.cameras.values()), state["detector"], on_result)
             state["pipeline"].start()
@@ -259,21 +307,21 @@ def create_app() -> FastAPI:
         camera = get_camera(camera_id)
         pipeline = state["pipeline"]
         if pipeline is not None:
-            snap = pipeline.snapshot(camera_id)
-            img = snap["display"] if snap["display"] is not None else snap["frame"]
-            if img is None:
+            # Тот же кадр, что в /stream, с размытием и без разметки
+            view = pipeline.view(camera_id)
+            if view is None:
                 raise HTTPException(503, "кадра ещё нет")
-            if blur_enabled() and snap["detections"]:
-                img = blur_people(img, snap["detections"])
+            img = privacy_view(camera_id, view["frame"], view["tracks"], view["people"], view["covered"])
             return Response(encode_jpeg(img), media_type="image/jpeg")
         return Response(encode_jpeg(camera_frame(camera)), media_type="image/jpeg")
 
-    def render(camera_id: str, camera: CameraConfig, snap: dict) -> bytes:
-        """Кадр для показа с разметкой последнего результата детектора, один JPEG на всех зрителей."""
-        info = f"{camera_id} fps {snap['fps']:.1f} lat {snap['latency_ms']:.0f} ms"
+    def render(camera_id: str, camera: CameraConfig, view: dict, snap: dict) -> bytes:
+        """Кадр показа с треками на его ts (Pipeline.view), один JPEG на всех зрителей."""
+        info = f"{camera_id} fps {snap['fps']:.1f} lat {snap['latency_ms']:.0f} ms delay {view['delay']:.1f} s"
+        img, (tracks, people) = scale_view(view["frame"], [view["tracks"], view["people"]], stream_width())
         # Размытие голов до рисования разметки и до сжатия
-        img = blur_people(snap["display"], snap["detections"]) if blur_enabled() else snap["display"]
-        jpeg = encode_jpeg(draw(img, snap["detections"], camera.zones, info, snap["tracks"]))
+        img = privacy_view(camera_id, img, tracks, people, view["covered"])
+        jpeg = encode_jpeg(draw_tracks(img, tracks, camera.zones, info), stream_quality())
         mjpeg["encodes"][camera_id] = mjpeg["encodes"].get(camera_id, 0) + 1
         return jpeg
 
@@ -285,10 +333,10 @@ def create_app() -> FastAPI:
             camera = store.cameras.get(camera_id)
             if camera is None:
                 break
-            snap = pipeline.snapshot(camera_id)
-            if snap["display"] is not None and snap["display_ts"] != last_ts:
-                last_ts = snap["display_ts"]
-                jpeg = await asyncio.to_thread(render, camera_id, camera, snap)
+            view = pipeline.view(camera_id)
+            if view is not None and view["ts"] != last_ts:
+                last_ts = view["ts"]
+                jpeg = await asyncio.to_thread(render, camera_id, camera, view, pipeline.snapshot(camera_id))
                 async with feed["cond"]:
                     feed["jpeg"] = jpeg
                     feed["seq"] += 1

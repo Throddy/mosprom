@@ -98,15 +98,60 @@ ss -ltn | grep ':8000 '
 
 Затем открыть `https://<домен>` с Mac и с телефона: видео камер, рамки и скелеты, лента тревог, журнал.
 
-## Обновление
+## Обновление на новый коммит
+
+`<SHA>` — полный SHA нового проверенного коммита `main`. `install.sh` ставит текущий checkout и не перезаписывает `/opt/mosprom/.env`:
 
 ```bash
 runuser -u mosprom -- git -C /opt/mosprom fetch origin
-runuser -u mosprom -- git -C /opt/mosprom checkout --detach <новый SHA>
-bash /opt/mosprom/deploy/install.sh <домен>
+runuser -u mosprom -- git -C /opt/mosprom checkout --detach <SHA>
+runuser -u mosprom -- git -C /opt/mosprom rev-parse HEAD
+bash /opt/mosprom/deploy/install.sh sokol.157.22.134.21.sslip.io
 ```
 
-`.env` сохраняется. Новые переменные из `deploy/env.demo` переносить в `/opt/mosprom/.env` вручную, затем `systemctl restart mosprom`.
+`install.sh` не дописывает новые переменные в существующий `.env`: их нужно перенести из `deploy/env.demo` вручную. С BE-18 добавлены или изменены:
+
+```
+ORT_THREADS=6
+TORCH_THREADS=1
+CV2_THREADS=1
+DETECTOR_WORKERS=2
+TILED_WORKERS=2
+STREAM_FPS=10
+STREAM_WIDTH=960
+STREAM_QUALITY=70
+STREAM_DELAY=auto
+```
+
+Записать их в `/opt/mosprom/.env` (строка заменяется, если ключ уже есть, иначе дописывается) и перезапустить:
+
+```bash
+for kv in ORT_THREADS=6 TORCH_THREADS=1 CV2_THREADS=1 DETECTOR_WORKERS=2 TILED_WORKERS=2 STREAM_FPS=10 STREAM_WIDTH=960 STREAM_QUALITY=70 STREAM_DELAY=auto; do k="${kv%%=*}"; if grep -q "^$k=" /opt/mosprom/.env; then sed -i "s|^$k=.*|$kv|" /opt/mosprom/.env; else echo "$kv" >> /opt/mosprom/.env; fi; done
+systemctl restart mosprom
+```
+
+## Подбор на сервере
+
+Значения `ORT_THREADS`, `DETECTOR_WORKERS`, `TILED_WORKERS` в `deploy/env.demo` — ориентир с Mac. На сервере они подбираются замером: на время замера сервис останавливается, чтобы не делить с ним процессор.
+
+```bash
+systemctl stop mosprom
+cd /opt/mosprom && sudo -u mosprom .venv/bin/python scripts/bench_cameras.py --counts 6 --fps 10 --seconds 20 --workers 1,2,3 --ort-threads 4,6,8
+systemctl start mosprom
+```
+
+В конце вывода строка «Вывод: наибольший суммарный FPS при 6 камерах … при N обработчиках и ort_threads=M». Записать эти значения в `.env` (`TILED_WORKERS` — как `DETECTOR_WORKERS`, пока плитки не замерены отдельно) и перезапустить:
+
+```bash
+sed -i "s|^ORT_THREADS=.*|ORT_THREADS=M|; s|^DETECTOR_WORKERS=.*|DETECTOR_WORKERS=N|; s|^TILED_WORKERS=.*|TILED_WORKERS=N|" /opt/mosprom/.env
+systemctl restart mosprom
+```
+
+Проверка через 30–60 с: у каждой камеры `fps` и `latency_ms`:
+
+```bash
+curl -s http://127.0.0.1:8000/api/status | python3 -m json.tool
+```
 
 ## Логи и перезапуск
 

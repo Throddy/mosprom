@@ -45,3 +45,13 @@ def blur_people(frame: np.ndarray, detections: list[Detection]) -> np.ndarray:
         small = cv2.resize(region, (PIXELS, PIXELS), interpolation=cv2.INTER_LINEAR)
         out[y1:y2, x1:x2] = cv2.resize(small, (x2 - x1, y2 - y1), interpolation=cv2.INTER_NEAREST)
     return out
+
+
+def blur_top(frame: np.ndarray, share: float = 0.4) -> np.ndarray:
+    """Копия кадра с пикселизированной верхней частью: когда для кадра нет результатов детектора."""
+    out = frame.copy()
+    h, w = out.shape[:2]
+    y2 = max(int(h * share), 2)
+    small = cv2.resize(out[:y2], (max(w // 40, 2), max(y2 // 40, 2)), interpolation=cv2.INTER_LINEAR)
+    out[:y2] = cv2.resize(small, (w, y2), interpolation=cv2.INTER_NEAREST)
+    return out

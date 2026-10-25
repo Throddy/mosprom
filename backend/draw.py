@@ -54,3 +54,27 @@ def _skeleton(img: np.ndarray, kpts: np.ndarray) -> None:
     for x, y, conf in kpts:
         if conf > KPT_CONF:
             cv2.circle(img, (int(x), int(y)), 3, GREEN, -1)
+
+
+def draw_tracks(frame: np.ndarray, tracks: list[dict], zones: list[Zone], info: str) -> np.ndarray:
+    """Разметка кадра показа по трекам на его ts (Pipeline.view): люди со скелетом, техника, нарушители красным."""
+    img = frame.copy()
+    h, w = img.shape[:2]
+    for zone in zones:
+        pts = np.array([[x * w, y * h] for x, y in zone.polygon], np.int32)
+        cv2.polylines(img, [pts], True, RED, 2)
+    for track in tracks:
+        x1, y1, x2, y2 = (int(v) for v in track["bbox"])
+        if track["cls"] == "person":
+            cv2.rectangle(img, (x1, y1), (x2, y2), GREEN, 2)
+            if track["kpts"] is not None:
+                _skeleton(img, track["kpts"])
+        elif track["cls"] in VEHICLES:
+            cv2.rectangle(img, (x1, y1), (x2, y2), ORANGE, 2)
+            cv2.putText(img, track["cls"], (x1, max(y1 - 6, 14)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, ORANGE, 2)
+        color = RED if track["active"] else WHITE
+        if track["active"]:
+            cv2.rectangle(img, (x1, y1), (x2, y2), RED, 3)
+        cv2.putText(img, f"id {track['id']}", (x1, min(y2 + 20, h - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    cv2.putText(img, info, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, WHITE, 2)
+    return img

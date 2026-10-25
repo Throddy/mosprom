@@ -26,6 +26,7 @@ CLOSE_AFTER = 2.0   # с без нарушения или без трека, п�
 HISTORY = 10.0      # с истории трека
 REPEAT_WINDOW = 10.0  # с после закрытия, в течение которых новое событие рядом считается повтором
 REPEAT_DIST = 1.0     # расстояние до прежнего нарушения в высотах бокса нового трека
+REPEAT_MAX = 60.0     # с от ts_confirm: дольше событие повторами не продолжается и не подавляет новые
 
 
 @dataclass
@@ -46,6 +47,11 @@ def in_schedule(schedule: tuple[str, str], t: time) -> bool:
     if start <= end:
         return start <= t < end
     return t >= start or t < end
+
+
+def _origin(ref: dict) -> float:
+    """ts_confirm прежнего события: открытого ({"event"}) или закрытого (запись recent)."""
+    return ref["event"].ts_confirm if "event" in ref else ref["ts_confirm"]
 
 
 class Engine:
@@ -126,6 +132,9 @@ class Engine:
                 self.open[key]["last_seen"] = ts
                 self.open[key]["foot"] = foot
                 continue
+            if key in self.suppressed and ts - _origin(self.suppressed[key]["ref"]) > REPEAT_MAX:
+                # Прежнее событие старше REPEAT_MAX: дальше нарушение даёт новое событие
+                del self.suppressed[key]
             if key in self.suppressed:
                 # Подавленный эпизод продолжается: позиция и время прежнего нарушения обновляются
                 item = self.suppressed[key]
@@ -156,12 +165,13 @@ class Engine:
         limit = REPEAT_DIST * bbox_height(bbox)
         best, best_d = None, None
         for other, item in self.open.items():
-            if other[:2] == (rule_type, zone) and other[2] != track_id:
+            if other[:2] == (rule_type, zone) and other[2] != track_id and ts - _origin(item) <= REPEAT_MAX:
                 d = ((item["foot"][0] - fx) ** 2 + (item["foot"][1] - fy) ** 2) ** 0.5
                 if d < limit and (best_d is None or d < best_d):
                     best, best_d = ("open", other), d
         for rec in self.recent:
-            if (rec["type"], rec["zone"]) == (rule_type, zone) and ts - rec["ts_end"] <= REPEAT_WINDOW:
+            if ((rec["type"], rec["zone"]) == (rule_type, zone) and ts - rec["ts_end"] <= REPEAT_WINDOW
+                    and ts - rec["ts_confirm"] <= REPEAT_MAX):
                 d = ((rec["foot"][0] - fx) ** 2 + (rec["foot"][1] - fy) ** 2) ** 0.5
                 if d < limit and (best_d is None or d < best_d):
                     best, best_d = ("closed", rec), d
@@ -172,7 +182,7 @@ class Engine:
         if kind == "open" and ref[2] not in ctx.tracks:
             # Трек прежнего события пропал из кадра: событие продолжается новым треком
             item = self.open.pop(ref)
-            item["last_seen"], item["foot"] = ts, (fx, fy)
+            item["last_seen"], item["foot"], item["continued"] = ts, (fx, fy), True
             self.open[key] = item
             log.info("камера %s: %s трек %s продолжает событие %s трека %s", self.camera.id, rule_type,
                      track_id, item["event"].id, ref[2])
@@ -215,13 +225,14 @@ class Engine:
 
         for key, item in list(self.open.items()):
             if (ts - item["last_seen"] > CLOSE_AFTER or key[2] not in self.tracks
-                    or key[:2] not in active_keys):
+                    or key[:2] not in active_keys
+                    or item.get("continued") and ts - item["event"].ts_confirm > REPEAT_MAX):
                 event = item["event"]
                 event.ts_end = item["last_seen"]
                 result.closed_events.append(event)
                 del self.open[key]
                 self.recent.append({"type": key[0], "zone": key[1], "foot": item["foot"],
-                                    "ts_end": item["last_seen"]})
+                                    "ts_end": item["last_seen"], "ts_confirm": event.ts_confirm})
 
         for key in [k for k, item in self.suppressed.items()
                     if ts - item["last_seen"] > CLOSE_AFTER or k[2] not in self.tracks or k[:2] not in active_keys]:
