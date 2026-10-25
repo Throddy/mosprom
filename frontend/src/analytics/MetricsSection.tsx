@@ -8,9 +8,10 @@ import { useAsync } from './useAsync.ts'
 export function MetricsSection({ catalog }: { catalog: Catalog }) {
   const { result, reload } = useAsync((signal) => getMetrics(signal), [])
   const metrics = result.data
-  const rules = Object.entries(metrics?.rules ?? {})
+  // Бег на стенде не показывается: правило распознаёт бег только в части сцен (BE-20)
+  const rules = Object.entries(metrics?.rules ?? {}).filter(([type]) => type !== 'running')
   const title = (t: string) => catalog.rules.find((r) => r.type === t)?.title ?? t
-  const missing = catalog.rules.filter((r) => !rules.some(([t]) => t === r.type))
+  const missing = catalog.rules.filter((r) => r.type !== 'running' && !rules.some(([t]) => t === r.type))
 
   return (
     <Section id="metrics" title="Точность распознавания" source="GET /api/metrics" state={result} onRetry={reload} what="метрики">

@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { getBenchmarks } from '../api/client.ts'
 import type { Benchmark } from '../api/types.ts'
 import { ColumnChart } from './charts.tsx'
@@ -7,27 +6,13 @@ import {
   KIND_LABEL,
   benchKind,
   best,
-  boardsNeeded,
   byKind,
-  camerasPerBoard,
-  contractLinqRecord,
   fmt,
 } from './model.ts'
 import { Section, SourceNote, StatTile } from './parts.tsx'
 import { useAsync } from './useAsync.ts'
 
 const dateFmt = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
-
-function plural(n: number, one: string, few: string, many: string): string {
-  const m10 = n % 10
-  const m100 = n % 100
-  if (m10 === 1 && m100 !== 11) return one
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few
-  return many
-}
-
-const cameras = (n: number) => `${fmt(n)} ${plural(n, 'камера', 'камеры', 'камер')}`
-const boards = (n: number) => `${fmt(n)} ${plural(n, 'плата', 'платы', 'плат')}`
 
 export function PerformanceSection() {
   const { result, reload } = useAsync((signal) => getBenchmarks(signal), [])
@@ -80,8 +65,6 @@ function Perf({ list }: { list: Benchmark[] }) {
       <SourceNote>
         Время ускорителя и путь кадра через облачный стенд измерены отдельно. Скорость тревоги на стенде определяет полный путь кадра.
       </SourceNote>
-
-      <Calculator list={list} />
 
       <details className="more">
         <summary>Все замеры и графики</summary>
@@ -157,80 +140,5 @@ function Perf({ list }: { list: Benchmark[] }) {
       </p>
       </details>
     </>
-  )
-}
-
-const PRESETS = [2, 3, 5, 10]
-
-// Калькулятор по CONTRACT.md, раздел 8: камер на плату = floor(fps / fps_камеры), fps — наибольший среди записей linq
-function Calculator({ list }: { list: Benchmark[] }) {
-  const [camFps, setCamFps] = useState('10')
-  const [count, setCount] = useState('')
-  const contract = contractLinqRecord(list)
-  const service = best(byKind(list, 'linq-service'))
-  const fpsNum = Number(camFps.replace(',', '.'))
-  const valid = Number.isFinite(fpsNum) && fpsNum > 0 && fpsNum <= 30
-  const countNum = Number(count)
-  const countValid = count.trim() !== '' && Number.isInteger(countNum) && countNum > 0
-
-  if (!contract) {
-    return <p className="empty">Расчёт плат недоступен: нет замеров LinQ</p>
-  }
-
-  const perBoard = valid ? camerasPerBoard(contract.fps, fpsNum) : 0
-  const perBoardService = valid && service ? camerasPerBoard(service.fps, fpsNum) : null
-
-  return (
-    <div className="calc" data-section="calc">
-      <h4>Сколько камер потянет одна плата LinQ</h4>
-      <div className="calc-inputs">
-        <label>
-          <span className="field-label">Кадров в секунду с камеры</span>
-          <input type="number" min={0.1} max={30} step="any" value={camFps} onChange={(e) => setCamFps(e.target.value)} />
-        </label>
-        <div className="calc-presets" role="group" aria-label="Частота анализа">
-          {PRESETS.map((p) => (
-            <button key={p} type="button" className="btn btn-small" aria-pressed={Number(camFps) === p} onClick={() => setCamFps(String(p))}>
-              {p}
-            </button>
-          ))}
-        </div>
-        <label>
-          <span className="field-label">Камер на объекте</span>
-          <input type="number" min={1} step={1} placeholder="например, 50" value={count} onChange={(e) => setCount(e.target.value)} />
-        </label>
-      </div>
-
-      {!valid ? (
-        <p className="form-error">Введите число кадров в секунду больше 0 и не больше 30</p>
-      ) : (
-        <div className="calc-results">
-          <div className="calc-result" data-calc="contract">
-            <div className="stat-label">По лучшему замеру: {KIND_LABEL[benchKind(contract)]}</div>
-            <div className="stat-value">{cameras(perBoard)}</div>
-            <div className="stat-note muted">
-              {fmt(contract.fps, 2)} кадра/с ÷ {fmt(fpsNum, 2)} с округлением вниз. Это расчёт
-              {benchKind(contract) === 'linq-accelerator' ? ' без сети, очереди и подготовки кадра' : ''}.
-            </div>
-            {countValid && (
-              <div className="calc-boards">
-                {perBoard > 0
-                  ? `Для ${cameras(countNum)} нужно: ${boards(boardsNeeded(countNum, perBoard)!)}`
-                  : 'Одна плата не обработает и одну камеру с такой частотой'}
-              </div>
-            )}
-          </div>
-          {service && perBoardService !== null && benchKind(contract) !== 'linq-service' && (
-            <div className="calc-result" data-calc="service">
-              <div className="stat-label">Через облачный стенд, по измеренным {fmt(service.fps, 2)} кадра/с</div>
-              <div className="stat-value">{cameras(perBoardService)}</div>
-              <div className="stat-note muted">
-                {perBoardService === 0 ? 'Стенд не успевает обработать даже одну камеру с такой частотой.' : 'Расчёт по измеренной скорости стенда.'}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
   )
 }

@@ -123,7 +123,8 @@ export function FramePreview({ cameraId, cameraName, paused }: { cameraId: strin
     return () => window.clearInterval(timer)
   }, [paused])
 
-  const src = `/api/cameras/${encodeURIComponent(cameraId)}/frame?t=${tick}`
+  // Лёгкое превью: ширина 480 px, JPEG 70 (BE-20)
+  const src = `/api/cameras/${encodeURIComponent(cameraId)}/frame?w=480&t=${tick}`
   return (
     <div className="stream">
       <div className={`stream-frame ${loaded ? 'stream-live' : 'stream-connecting'}`} data-stream-state={loaded ? 'still' : 'connecting'}>

@@ -439,6 +439,135 @@ def blur_new_person():
         ml.create_detector = original
 
 
+def plain_server(env: dict):
+    """uvicorn с PIPELINE=0 и заданным окружением. Возвращает (app, server, thread, port)."""
+    import uvicorn
+
+    from backend.app import create_app
+    os.environ.update(PIPELINE="0", **env)
+    app = create_app()
+    port = free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 30
+    while not server.started and time.time() < deadline:
+        time.sleep(0.2)
+    return app, server, thread, port
+
+
+def put_status(port: int, camera: dict, headers: dict | None = None) -> int:
+    import json
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/cameras/{camera['id']}", method="PUT",
+                                 data=json.dumps(camera).encode(), headers={"Content-Type": "application/json",
+                                                                             **(headers or {})})
+    try:
+        return urllib.request.urlopen(req, timeout=10).status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def admin_local():
+    import json
+    edits = TMP / "admin_cameras.local.yaml"
+    env = {"READ_ONLY": "1", "CAMERAS_PATH": str(edits), "CAMERAS_BASE": "configs/cameras.yaml"}
+    try:
+        for admin, cases in (("1", [({}, 200), ({"X-Forwarded-For": "203.0.113.5"}, 403),
+                                    ({"X-Real-IP": "203.0.113.5"}, 403), ({"Forwarded": "for=203.0.113.5"}, 403)]),
+                             ("0", [({}, 403)])):
+            _, server, thread, port = plain_server({**env, "ADMIN_LOCAL": admin})
+            try:
+                cam = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/api/cameras", timeout=10).read())[0]
+                for headers, want in cases:
+                    got = put_status(port, cam, headers)
+                    expect(got == want, f"ADMIN_LOCAL={admin} headers {list(headers)}: {got}, want {want}")
+            finally:
+                server.should_exit = True
+                thread.join(15)
+    finally:
+        os.environ.update(READ_ONLY="0", ADMIN_LOCAL="0")
+        os.environ.pop("CAMERAS_BASE", None)
+
+
+def cameras_base():
+    import hashlib
+    import shutil
+
+    from fastapi.testclient import TestClient
+
+    from backend.app import create_app
+    base = TMP / "base_cameras.yaml"
+    shutil.copy(ROOT / "configs" / "cameras.yaml", base)
+    digest = hashlib.sha256(base.read_bytes()).hexdigest()
+    edits = TMP / "base_cameras.local.yaml"
+    edits.unlink(missing_ok=True)
+    os.environ.update(PIPELINE="0", READ_ONLY="0", CAMERAS_BASE=str(base), CAMERAS_PATH=str(edits))
+    try:
+        c = TestClient(create_app())
+        cam = c.get("/api/cameras").json()[0]
+        expect([x["id"] for x in c.get("/api/cameras").json()] == [x.id for x in load_cameras(base)], "base not read")
+        cam["name"] = "admin edit"
+        r = c.put(f"/api/cameras/{cam['id']}", json=cam)
+        expect(r.status_code == 200, f"PUT {r.status_code}")
+        expect(edits.exists(), "edits file not created")
+        expect(hashlib.sha256(base.read_bytes()).hexdigest() == digest, "base changed")
+        again = TestClient(create_app()).get("/api/cameras").json()[0]
+        expect(again["name"] == "admin edit", f"restart read {again['name']}")
+    finally:
+        os.environ.pop("CAMERAS_BASE", None)
+        os.environ["CAMERAS_PATH"] = str(TMP / "cameras.local.yaml")
+
+
+def events_keep():
+    import uuid
+
+    from fastapi.testclient import TestClient
+
+    from backend.app import MEDIA_DIR, create_app
+    from core.schemas import Event
+    os.environ.update(PIPELINE="0", READ_ONLY="0", EVENTS_KEEP_MINUTES="60", FIXTURE_WS_INTERVAL="3600")
+    folder = MEDIA_DIR / "check_events_keep"
+    folder.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    try:
+        app = create_app()
+        db = app.state.store.db
+        cases = {"old_closed": (now - 7200, now - 7100), "old_open": (now - 7200, None),
+                 "new_closed": (now - 60, now - 30)}
+        ids = {}
+        for name, (ts, ts_end) in cases.items():
+            eid = uuid.uuid4().hex
+            ids[name] = eid
+            (folder / f"{eid}.jpg").write_bytes(b"jpg")
+            db.insert(Event(id=eid, camera_id="cam1", type="fall", severity="critical", track_id=1,
+                            bbox=(0.0, 0.0, 1.0, 1.0), conf=0.9, ts_start=ts, ts_confirm=ts, ts_end=ts_end),
+                      f"check_events_keep/{eid}.jpg")
+        with TestClient(app):
+            time.sleep(1.5)
+        expect(db.get(ids["old_closed"]) is None, "old closed event kept")
+        expect(not (folder / f"{ids['old_closed']}.jpg").exists(), "old snapshot kept")
+        expect(db.get(ids["old_open"]) is not None, "open event deleted")
+        expect(db.get(ids["new_closed"]) is not None and (folder / f"{ids['new_closed']}.jpg").exists(),
+               "recent event deleted")
+    finally:
+        os.environ["EVENTS_KEEP_MINUTES"] = "0"
+        for f in folder.glob("*"):
+            f.unlink()
+        folder.rmdir()
+
+
+def frame_w():
+    from fastapi.testclient import TestClient
+
+    from backend.app import create_app
+    os.environ.update(PIPELINE="0", READ_ONLY="0")
+    c = TestClient(create_app())
+    r = c.get("/api/cameras/cam1/frame", params={"w": 480})
+    expect(r.status_code == 200 and r.headers["content-type"] == "image/jpeg", f"status {r.status_code}")
+    expect(decode(r.content).shape[1] == 480, f"width {decode(r.content).shape[1]}")
+    expect(c.get("/api/cameras/cam1/frame", params={"w": 100}).status_code == 422, "w=100 accepted")
+
+
 if __name__ == "__main__":
     check("read_only", read_only)
     check("blur", blur)
@@ -451,4 +580,8 @@ if __name__ == "__main__":
     check("stream_fps", stream_fps)
     check("stream_sync", stream_sync)
     check("blur_new_person", blur_new_person)
+    check("admin_local", admin_local)
+    check("cameras_base", cameras_base)
+    check("events_keep", events_keep)
+    check("frame_w", frame_w)
     sys.exit(1 if failed else 0)

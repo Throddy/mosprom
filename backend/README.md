@@ -66,6 +66,9 @@ set -a; source .env; set +a
 | `STREAM_QUALITY` | `85` | качество JPEG кадров `/stream` |
 | `STREAM_DELAY` | `auto` | задержка показа, с, или `auto`; раздел «Показ видео» |
 | `STREAM_BUFFER_MAX` | `12` | предел задержки показа и буфера кадров показа, с |
+| `EVENTS_KEEP_MINUTES` | `0` | больше 0: раз в 60 с удаляются закрытые события с `ts_confirm` старше `now − EVENTS_KEEP_MINUTES` минут и их снимки в `backend/media/`; открытые остаются. В лог число удалённых не чаще раза в 5 минут |
+| `ADMIN_LOCAL` | `0` | при `READ_ONLY=1` и `ADMIN_LOCAL=1` `PUT /api/cameras/{id}` и `PATCH /api/events/{id}` разрешены запросам с `127.0.0.1` или `::1` без заголовков `X-Forwarded-For`, `X-Real-IP`, `Forwarded` (SSH-туннель; через Caddy заголовок есть всегда). В лог: метод, путь, `admin local` |
+| `CAMERAS_BASE` | `configs/cameras.yaml` | базовый файл камер: читается, если файла правок `CAMERAS_PATH` ещё нет; `PUT` пишет в `CAMERAS_PATH`, базовый файл не меняется |
 | `HLS_ENABLED` | `0` | `1`: видео камер в H.264 (HLS) по `/hls/<camera_id>/index.m3u8`, раздел «Показ видео» |
 | `HLS_DIR` | `backend/data/hls` | папка сегментов HLS, путь от корня репозитория |
 | `HLS_BITRATE` | `1800k` | битрейт H.264 на камеру; `maxrate` ×1.3, `bufsize` ×2 |
@@ -86,7 +89,7 @@ set -a; source .env; set +a
 - `GET /api/events`: `limit` от 1 до 500 (по умолчанию 50), `offset` не меньше 0.
 - `PATCH /api/events/{id}`: `comment` не длиннее 1000 символов.
 - `PUT /api/cameras/{id}`: проверки в разделе «Камеры».
-- Если есть `frontend/dist/index.html`, сборка фронтенда раздаётся по `/`. Снимки событий сохраняются в `backend/media/` и раздаются по `/media/...`. При `HLS_ENABLED=1` видео камер в H.264 раздаётся статикой по `/hls/<camera_id>/index.m3u8` из `HLS_DIR` (раздел «Показ видео»).
+- Если есть `frontend/dist/index.html`, сборка фронтенда раздаётся по `/`. Снимки событий сохраняются в `backend/media/` и раздаются по `/media/...`. `GET /api/cameras/{id}/frame?w=480`: кадр шириной `w` (160–1920) с сохранением пропорций, JPEG 70, для превью; без `w` — как раньше. При `HLS_ENABLED=1` видео камер в H.264 раздаётся статикой по `/hls/<camera_id>/index.m3u8` из `HLS_DIR` (раздел «Показ видео»).
 
 ## Камеры
 
