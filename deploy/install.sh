@@ -30,6 +30,8 @@ fi
 
 APP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_USER=mosprom
+# Нейтральный каталог: python3 и git от root не берут файлы из каталога, доступного пользователю сервиса
+cd /
 if ! id "$APP_USER" >/dev/null 2>&1; then
     echo "Нет пользователя $APP_USER. Код получает он: deploy/README.md, этап B." >&2
     exit 1
@@ -44,9 +46,10 @@ as_app() { runuser -u "$APP_USER" -- "$@"; }
 echo "== 1. Код: $APP"
 SHA="$(as_app git -C "$APP" rev-parse HEAD)"
 echo "Коммит: $SHA"
-if [ -n "$(as_app git -C "$APP" status --porcelain --untracked-files=no)" ]; then
-    echo "В клоне изменены отслеживаемые файлы, установка остановлена:" >&2
-    as_app git -C "$APP" status --short --untracked-files=no >&2
+# Скрипты из клона выполняются от root: изменённые и лишние неигнорируемые файлы останавливают установку
+if [ -n "$(as_app git -C "$APP" status --porcelain)" ]; then
+    echo "В клоне изменённые или лишние файлы, установка остановлена:" >&2
+    as_app git -C "$APP" status --short >&2
     exit 1
 fi
 
@@ -93,6 +96,8 @@ bad=""
 [ "$(setting PIPELINE)" = "1" ] || bad="$bad PIPELINE=1"
 [ "$(setting DETECTOR_BACKEND)" = "onnx" ] || bad="$bad DETECTOR_BACKEND=onnx"
 [ "$(setting READ_ONLY)" = "1" ] || bad="$bad READ_ONLY=1"
+[ "$(setting BLUR_FACES)" = "1" ] || bad="$bad BLUR_FACES=1"
+[ "$(setting CAMERAS_PATH)" = "configs/cameras.demo.yaml" ] || bad="$bad CAMERAS_PATH=configs/cameras.demo.yaml"
 [ "$(setting BACKEND_HOST)" = "127.0.0.1" ] || bad="$bad BACKEND_HOST=127.0.0.1"
 [ "$(setting BACKEND_PORT)" = "8000" ] || bad="$bad BACKEND_PORT=8000"
 if [ -n "$bad" ]; then
@@ -133,7 +138,7 @@ for _ in $(seq 1 60); do
     sleep 2
 done
 [ -n "$status" ] || fail "нет ответа http://127.0.0.1:8000/api/status за 120 с"
-echo "$status" | python3 -c '
+echo "$status" | python3 -I -c '
 import json, sys
 s = json.load(sys.stdin)
 cams = s.get("cameras", [])
