@@ -68,7 +68,7 @@
 - [x] **BE-15** · 25.10 02:00 · Стенд: Ivideon, плавное видео, общий MJPEG, список хостов, видео в репозитории.
 - [x] **BE-16** · 25.10 03:00 · Несколько детекторов параллельно, DETECTOR_WORKERS.
 - [x] **BE-17** · 25.10 02:05 · Плитки для трансляций (`TILED_CAMERAS`, `TILED_WORKERS`), подавление повторных тревог, чтение HLS через `ffmpeg -re`. На Mac `live_*` с плитками 0.56 кадра/с, подбор на сервере — `backend/README.md`.
-- [x] **BE-deploy** · 25.10 06:30 · Полный комплект CPU-демо в git (две модели ONNX, `frontend/dist`), `scripts/check_distribution.py`, локальный запуск `scripts/start_demo.sh`, установка на сервер из клона по deploy key (`deploy/install.sh`, `deploy/README.md`).
+- [x] **BE-deploy** · 25.10 05:50 · Полный комплект CPU-демо в git (две модели ONNX, `frontend/dist`), `scripts/check_distribution.py`, локальный запуск `scripts/start_demo.sh`, установка на сервер из клона по deploy key (`deploy/install.sh`, `deploy/README.md`).
 
 ## Фронтенд и продукт: Никитос
 
