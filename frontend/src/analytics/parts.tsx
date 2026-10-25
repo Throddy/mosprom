@@ -6,7 +6,7 @@ const timeFmt = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-d
 interface SectionProps<T> {
   id: string
   title: string
-  // откуда данные: путь API
+  // откуда данные: путь API, виден в подсказке
   source: string
   actions?: ReactNode
   state: Async<T>
@@ -19,13 +19,16 @@ interface SectionProps<T> {
 // Раздел страницы со своими загрузкой и ошибкой: отказ одного API не ломает остальные разделы
 export function Section<T>({ id, title, source, actions, state, onRetry, what, children }: SectionProps<T>) {
   return (
-    <section className="an-section" aria-labelledby={`an-${id}`} data-section={id}>
+    <section className="an-section" id={`section-${id}`} aria-labelledby={`an-${id}`} data-section={id} data-source={source}>
       <div className="an-head">
-        <h3 id={`an-${id}`}>{title}</h3>
-        <span className="muted an-source">
-          Источник: <code>{source}</code>
-          {state.state === 'ok' && <> · обновлено {timeFmt.format(state.at)}</>}
-        </span>
+        <div>
+          <h3 id={`an-${id}`}>{title}</h3>
+          {state.state === 'ok' && (
+            <p className="muted small an-source" title={`Источник: ${source}`}>
+              Обновлено в {timeFmt.format(state.at)}
+            </p>
+          )}
+        </div>
         {actions && <div className="an-actions">{actions}</div>}
       </div>
       {state.state === 'error' && (
@@ -38,7 +41,7 @@ export function Section<T>({ id, title, source, actions, state, onRetry, what, c
           </button>
         </div>
       )}
-      {state.state === 'loading' && state.data === null && <p className="feed-empty muted">Загрузка…</p>}
+      {state.state === 'loading' && state.data === null && <p className="empty">Загружаем…</p>}
       {state.data !== null && <div className={state.state === 'loading' ? 'an-body stale' : 'an-body'}>{children}</div>}
     </section>
   )

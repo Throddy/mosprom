@@ -4,6 +4,7 @@ import { fmt, fmtPct, ruleRates } from './model.ts'
 import { Section, SourceNote } from './parts.tsx'
 import { useAsync } from './useAsync.ts'
 
+// Метрики из reports/metrics.json: tp — найдено, fn — пропущено, fp — ложные тревоги
 export function MetricsSection({ catalog }: { catalog: Catalog }) {
   const { result, reload } = useAsync((signal) => getMetrics(signal), [])
   const metrics = result.data
@@ -12,58 +13,51 @@ export function MetricsSection({ catalog }: { catalog: Catalog }) {
   const missing = catalog.rules.filter((r) => !rules.some(([t]) => t === r.type))
 
   return (
-    <Section id="metrics" title="Метрики обнаружения" source="GET /api/metrics" state={result} onRetry={reload} what="метрики">
+    <Section id="metrics" title="Точность распознавания" source="GET /api/metrics" state={result} onRetry={reload} what="метрики">
       {metrics &&
         (rules.length === 0 ? (
-          <p className="feed-empty muted">Метрики ещё не посчитаны: reports/metrics.json пуст</p>
+          <p className="empty">Проверка точности ещё не проводилась</p>
         ) : (
           <>
             <SourceNote>
-              Посчитаны офлайн по событиям на тестовых видео{metrics.test_set ? <>, разметка <code>{metrics.test_set}</code></> : null}. Бэкенд
-              детектора в файле не указан.
+              Проверка на заранее размеченных видео, которых система не видела при настройке
+              {metrics.test_set ? (
+                <>
+                  {' '}
+                  (разметка <code>{metrics.test_set}</code>)
+                </>
+              ) : null}
+              .
             </SourceNote>
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Правило</th>
-                    <th scope="col" className="num">Размечено нарушений</th>
-                    <th scope="col" className="num">Тревог</th>
-                    <th scope="col" className="num">tp</th>
-                    <th scope="col" className="num">fp</th>
-                    <th scope="col" className="num">fn</th>
-                    <th scope="col" className="num">Precision</th>
-                    <th scope="col" className="num">Recall</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rules.map(([type, m]) => {
-                    const r = ruleRates(m)
-                    return (
-                      <tr key={type} data-rule={type}>
-                        <td>
-                          {title(type)} <code className="muted">{type}</code>
-                        </td>
-                        <td className="num">{fmt(r.labeled)}</td>
-                        <td className="num">{fmt(r.alarms)}</td>
-                        <td className="num">{fmt(m.tp)}</td>
-                        <td className="num">{fmt(m.fp)}</td>
-                        <td className="num">{fmt(m.fn)}</td>
-                        <td className="num">{r.precision === null ? '— (нет тревог)' : fmtPct(r.precision)}</td>
-                        <td className="num">{r.recall === null ? '— (нет разметки)' : fmtPct(r.recall)}</td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <ul className="metric-cards">
+              {rules.map(([type, m]) => {
+                const r = ruleRates(m)
+                return (
+                  <li key={type} className="metric-card" data-rule={type}>
+                    <p className="metric-title">{title(type)}</p>
+                    <p className="metric-main">
+                      Найдено <strong>{fmt(m.tp)}</strong> из <strong>{fmt(r.labeled)}</strong>
+                      {r.labeled === 0 && <span className="muted"> (нарушений в видео не было)</span>}
+                    </p>
+                    <dl className="facts facts-small">
+                      <dt>Пропущено</dt>
+                      <dd>{fmt(m.fn)}</dd>
+                      <dt>Ложных тревог</dt>
+                      <dd>{fmt(m.fp)}</dd>
+                      <dt>Точность</dt>
+                      <dd>{r.precision === null ? 'тревог не было' : fmtPct(r.precision)}</dd>
+                      <dt>Полнота</dt>
+                      <dd>{r.recall === null ? 'нет разметки' : fmtPct(r.recall)}</dd>
+                    </dl>
+                  </li>
+                )
+              })}
+            </ul>
             <p className="chart-note muted">
-              Precision = tp / (tp + fp), recall = tp / (tp + fn). Всего размеченных нарушений в расчёте:{' '}
-              {fmt(rules.reduce((sum, [, m]) => sum + m.tp + m.fn, 0))}.
+              Точность: какая доля тревог оказалась настоящими нарушениями. Полнота: какую долю нарушений система нашла. Всего размеченных
+              нарушений: {fmt(rules.reduce((sum, [, m]) => sum + m.tp + m.fn, 0))}.
             </p>
-            {missing.length > 0 && (
-              <p className="chart-note muted">Не посчитаны: {missing.map((r) => r.title).join(', ')}.</p>
-            )}
+            {missing.length > 0 && <p className="chart-note muted">Не проверялись: {missing.map((r) => r.title).join(', ')}.</p>}
           </>
         ))}
     </Section>

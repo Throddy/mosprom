@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { fmt } from './model.ts'
 
 export interface Bar {
@@ -43,21 +44,36 @@ export interface Column {
   tick: string
 }
 
-// Колонки с осью от нуля: максимум подписан на оси, значение каждой колонки — во всплывающей подсказке и в таблице
+// Колонки с осью от нуля: максимум подписан на оси. Значение колонки видно в строке под графиком
+// при наведении, касании или фокусе с клавиатуры, а также во всплывающей подсказке
 export function ColumnChart({ columns, unit, digits = 0, label, height = 160 }: { columns: Column[]; unit: string; digits?: number; label: string; height?: number }) {
+  const [active, setActive] = useState<string | null>(null)
   const max = Math.max(0, ...columns.map((c) => c.value))
+  const current = columns.find((c) => c.key === active)
   return (
     <figure className="colchart" aria-label={label}>
-      <div className="colchart-plot" style={{ height }}>
+      <div className="colchart-plot" style={{ height }} onMouseLeave={() => setActive(null)}>
         <span className="colchart-max">
           {fmt(max, digits)} {unit}
         </span>
         <div className="colchart-cols">
-          {columns.map((c) => (
-            <div key={c.key} className="colchart-col" title={`${c.label}: ${fmt(c.value, digits)} ${unit}`}>
-              {c.value > 0 && max > 0 && <span className="colchart-bar" style={{ height: `${(c.value / max) * 100}%` }} />}
-            </div>
-          ))}
+          {columns.map((c) => {
+            const text = `${c.label}: ${fmt(c.value, digits)} ${unit}`
+            return (
+              <button
+                key={c.key}
+                type="button"
+                className={c.key === active ? 'colchart-col colchart-col-active' : 'colchart-col'}
+                title={text}
+                aria-label={text}
+                onMouseEnter={() => setActive(c.key)}
+                onFocus={() => setActive(c.key)}
+                onClick={() => setActive(c.key)}
+              >
+                {c.value > 0 && max > 0 && <span className="colchart-bar" style={{ height: `${(c.value / max) * 100}%` }} />}
+              </button>
+            )
+          })}
         </div>
       </div>
       <div className="colchart-ticks" aria-hidden="true">
@@ -65,6 +81,15 @@ export function ColumnChart({ columns, unit, digits = 0, label, height = 160 }: 
           <span key={c.key}>{c.tick}</span>
         ))}
       </div>
+      <figcaption className="colchart-readout" aria-live="polite">
+        {current ? (
+          <>
+            {current.label}: <strong>{fmt(current.value, digits)}</strong> {unit}
+          </>
+        ) : (
+          <span className="muted">Выберите столбик, чтобы увидеть число</span>
+        )}
+      </figcaption>
     </figure>
   )
 }

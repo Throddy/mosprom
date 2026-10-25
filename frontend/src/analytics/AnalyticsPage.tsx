@@ -6,9 +6,9 @@ import { MetricsSection } from './MetricsSection.tsx'
 import { PerformanceSection } from './PerformanceSection.tsx'
 
 const LINKS = [
-  { id: 'events', title: 'События' },
-  { id: 'metrics', title: 'Метрики' },
-  { id: 'perf', title: 'ONNX и LinQ' },
+  { id: 'events', title: 'Тревоги' },
+  { id: 'metrics', title: 'Точность' },
+  { id: 'perf', title: 'Скорость LinQ' },
   { id: 'live', title: 'Камеры сейчас' },
 ]
 
@@ -17,22 +17,26 @@ export function AnalyticsPage({ server }: { server: ServerStatus }) {
   const catalog = useCatalog()
 
   return (
-    <div className="analytics">
-      <div className="feed-bar">
-        <div className="feed-heading">
+    <div className="page analytics">
+      <div className="page-head">
+        <div>
           <h2>Аналитика</h2>
+          <p className="muted">Сколько было тревог, насколько точно система их находит и как быстро работает на LinQ.</p>
         </div>
-        <nav className="an-toc" aria-label="Разделы аналитики">
-          {LINKS.map((l) => (
-            <button key={l.id} type="button" className="link-btn" onClick={() => document.getElementById(`an-${l.id}`)?.scrollIntoView({ behavior: 'smooth' })}>
-              {l.title}
-            </button>
-          ))}
-        </nav>
       </div>
-      {catalog.error && (
-        <p className="filters-error">Названия правил и камер не загружены ({catalog.error}), показаны идентификаторы.</p>
-      )}
+      <nav className="chips an-toc" aria-label="Разделы аналитики">
+        {LINKS.map((l) => (
+          <button
+            key={l.id}
+            type="button"
+            className="chip-btn"
+            onClick={() => document.getElementById(`section-${l.id}`)?.scrollIntoView({ behavior: 'smooth' })}
+          >
+            {l.title}
+          </button>
+        ))}
+      </nav>
+      {catalog.error && <p className="form-error">Названия правил и камер не загружены ({catalog.error}), показаны идентификаторы.</p>}
       <EventsSection catalog={catalog} server={server} />
       <MetricsSection catalog={catalog} />
       <PerformanceSection />
