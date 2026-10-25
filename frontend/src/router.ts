@@ -2,19 +2,19 @@ import { useEffect, useState } from 'react'
 
 // Маршруты в hash: бэкенд раздаёт frontend/dist без отката на index.html,
 // поэтому адрес вида /journal при обновлении страницы дал бы 404
-export type Page = 'alerts' | 'journal' | 'cameras' | 'analytics'
+export type Page = 'overview' | 'monitor' | 'alerts' | 'journal' | 'cameras' | 'analytics'
 
 export interface Route {
   page: Page
   params: URLSearchParams
 }
 
-const PAGES: Page[] = ['alerts', 'journal', 'cameras', 'analytics']
+const PAGES: Page[] = ['overview', 'monitor', 'alerts', 'journal', 'cameras', 'analytics']
 
 export function parseHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, '')
   const [path, query = ''] = raw.split('?', 2)
-  const page = PAGES.find((p) => p === path) ?? 'alerts'
+  const page = PAGES.find((p) => p === path) ?? 'overview'
   return { page, params: new URLSearchParams(query) }
 }
 

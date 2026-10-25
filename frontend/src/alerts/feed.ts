@@ -9,15 +9,23 @@ const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2 
 
 export const SEVERITY_LABEL: Record<string, string> = {
   critical: 'Критично',
-  high: 'Высокая',
-  medium: 'Средняя',
+  high: 'Высокая опасность',
+  medium: 'Средняя опасность',
 }
 
 export const STATUS_LABEL: Record<EventStatus, string> = {
-  new: 'Новое',
-  confirmed: 'Подтверждено',
-  false: 'Ложное',
-  forwarded: 'Передано мастеру',
+  new: 'Новая',
+  confirmed: 'Подтверждена',
+  false: 'Ложная',
+  forwarded: 'Передана мастеру',
+}
+
+// Подписи кнопок решения оператора
+export const ACTION_LABEL: Record<EventStatus, string> = {
+  new: 'Вернуть в новые',
+  confirmed: 'Подтвердить',
+  false: 'Ложная тревога',
+  forwarded: 'Передать мастеру',
 }
 
 export const ACTIONS: EventStatus[] = ['confirmed', 'false', 'forwarded']

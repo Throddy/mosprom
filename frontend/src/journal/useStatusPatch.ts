@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
-import { errorText, patchEvent } from '../api/client.ts'
+import { patchEvent, userMessage } from '../api/client.ts'
+import { noteForbidden } from '../api/readOnly.ts'
 import type { EventStatus, EventView } from '../api/types.ts'
 
 function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
@@ -9,7 +10,8 @@ function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
   return next
 }
 
-// PATCH статуса вне ленты: результат отдаётся в onSaved, лента FE-3 получит его через event_update
+// PATCH статуса вне ленты: результат отдаётся в onSaved, лента FE-3 получит его через event_update.
+// При ошибке, в том числе 403 демо-стенда, onSaved не вызывается
 export function useStatusPatch(onSaved: (view: EventView) => void) {
   const [pending, setPending] = useState<Record<string, EventStatus>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -20,7 +22,10 @@ export function useStatusPatch(onSaved: (view: EventView) => void) {
       setErrors((e) => without(e, event.id))
       patchEvent(event.id, status, event.comment)
         .then(onSaved)
-        .catch((err: unknown) => setErrors((e) => ({ ...e, [event.id]: errorText(err) })))
+        .catch((err: unknown) => {
+          noteForbidden(err)
+          setErrors((e) => ({ ...e, [event.id]: userMessage(err) }))
+        })
         .finally(() => setPending((p) => without(p, event.id)))
     },
     [onSaved],

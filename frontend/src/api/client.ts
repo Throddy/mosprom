@@ -53,6 +53,15 @@ export function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+// Текст для оператора: detail сервера как есть, без кода HTTP
+export function userMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 0) return 'нет связи с сервером'
+    return err.detail ?? `ошибка сервера (код ${err.status})`
+  }
+  return errorText(err)
+}
+
 export function getStatus(signal?: AbortSignal): Promise<Status> {
   return request<Status>('/api/status', { signal })
 }

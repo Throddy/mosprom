@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { errorText, eventsSocketUrl, getEvents, patchEvent } from '../api/client.ts'
+import { errorText, eventsSocketUrl, getEvents, patchEvent, userMessage } from '../api/client.ts'
+import { noteForbidden } from '../api/readOnly.ts'
 import type { EventStatus, EventView, WsMessage } from '../api/types.ts'
 import { applyMessage, parseMessage, upsert, type FeedEvents } from './feed.ts'
 
@@ -21,6 +22,8 @@ export interface AlertFeed {
   pending: Record<string, EventStatus>
   actionErrors: Record<string, string>
   fresh: Record<string, true>
+  // Новые тревоги на сервере сверх загруженных в ленту (по total из GET при последней синхронизации)
+  hiddenNew: number
   setStatus: (event: EventView, status: EventStatus) => void
   reload: () => void
   // Подписка на сообщения /ws/events для других страниц; возвращает отписку
@@ -34,7 +37,8 @@ function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
   return next
 }
 
-// Синхронизация: при каждом открытии WebSocket лента перечитывается через GET /api/events.
+// Синхронизация: при каждом открытии WebSocket лента перечитывается через GET /api/events:
+// последние события и последние новые (status=new), чтобы число новых не зависело от окна загрузки.
 // Сообщения, пришедшие во время запроса, ставятся в очередь и применяются после ответа,
 // поэтому снимок GET не затирает более новые изменения из WebSocket.
 export function useAlertFeed(): AlertFeed {
@@ -45,6 +49,7 @@ export function useAlertFeed(): AlertFeed {
   const [pending, setPending] = useState<Record<string, EventStatus>>({})
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({})
   const [fresh, setFresh] = useState<Record<string, true>>({})
+  const [hiddenNew, setHiddenNew] = useState(0)
   const syncRef = useRef<() => void>(() => {})
   const listenersRef = useRef(new Set<(msg: WsMessage) => void>())
 
@@ -79,11 +84,14 @@ export function useAlertFeed(): AlertFeed {
       controller?.abort()
       controller = new AbortController()
       syncing = true
-      getEvents({ limit: SYNC_LIMIT }, controller.signal)
-        .then((page) => {
+      const { signal } = controller
+      Promise.all([getEvents({ limit: SYNC_LIMIT }, signal), getEvents({ status: 'new', limit: SYNC_LIMIT }, signal)])
+        .then(([page, fresh]) => {
           if (disposed || gen !== syncGen) return
           synced = true
-          setEvents((f) => upsert(f, page.items))
+          const loadedNew = new Set([...fresh.items, ...page.items].filter((e) => e.status === 'new').map((e) => e.id))
+          setHiddenNew(Math.max(0, fresh.total - loadedNew.size))
+          setEvents((f) => upsert(f, [...fresh.items, ...page.items]))
           setLoadError(null)
           setLoaded(true)
         })
@@ -150,9 +158,13 @@ export function useAlertFeed(): AlertFeed {
   const setStatus = useCallback((event: EventView, status: EventStatus) => {
     setPending((p) => ({ ...p, [event.id]: status }))
     setActionErrors((e) => without(e, event.id))
+    // Лента меняется только по ответу сервера: при 403 и других ошибках событие остаётся прежним
     patchEvent(event.id, status, event.comment)
       .then((view) => setEvents((f) => upsert(f, [view])))
-      .catch((err: unknown) => setActionErrors((e) => ({ ...e, [event.id]: errorText(err) })))
+      .catch((err: unknown) => {
+        noteForbidden(err)
+        setActionErrors((e) => ({ ...e, [event.id]: userMessage(err) }))
+      })
       .finally(() => setPending((p) => without(p, event.id)))
   }, [])
 
@@ -166,5 +178,5 @@ export function useAlertFeed(): AlertFeed {
     }
   }, [])
 
-  return { events, loaded, loadError, connection, pending, actionErrors, fresh, setStatus, reload, subscribe }
+  return { events, loaded, loadError, connection, pending, actionErrors, fresh, hiddenNew, setStatus, reload, subscribe }
 }

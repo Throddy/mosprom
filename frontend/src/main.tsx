@@ -1,7 +1,10 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
+import { setupFavicon } from './favicon.ts'
 import './index.css'
+
+setupFavicon()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -33,7 +33,7 @@ export function EventsSection({ catalog, server }: Props) {
   return (
     <Section
       id="events"
-      title="События"
+      title="Тревоги"
       source="GET /api/stats"
       actions={
         <div className="segmented" role="group" aria-label="Период">
@@ -46,28 +46,21 @@ export function EventsSection({ catalog, server }: Props) {
       }
       state={result}
       onRetry={reload}
-      what="статистику событий"
+      what="статистику тревог"
     >
-      {backend === 'fixtures' && (
-        <SourceNote kind="test">
-          В базе тестовые события сервера (PIPELINE=0, /api/status: backend = fixtures). Это не результат нейросети.
-        </SourceNote>
-      )}
       {backend && backend !== 'fixtures' && (
-        <SourceNote>
-          Счёт по всем событиям базы. Детектор сервера сейчас: {server.state === 'online' ? server.status.detector : ''} ({backend}).
-        </SourceNote>
+        <SourceNote>Все тревоги из базы сервера, найденные нейросетью.</SourceNote>
       )}
 
       {stats &&
         (stats.total === 0 ? (
-          <p className="feed-empty muted">За выбранный период событий нет</p>
+          <p className="empty">За выбранный период тревог нет</p>
         ) : (
           <>
             <div className="kpi-row">
-              <StatTile label="Всего событий" value={fmt(stats.total)} />
+              <StatTile label="Всего тревог" value={fmt(stats.total)} />
               <StatTile
-                label="Необработанные"
+                label="Ждут решения"
                 value={fmt(stats.by_status.new ?? 0)}
                 note={`${fmtPct(share(stats.by_status.new ?? 0, stats.total))} от всех`}
               />
@@ -80,24 +73,24 @@ export function EventsSection({ catalog, server }: Props) {
             </div>
 
             <div className="chart-grid">
-              <ChartBlock title="По типам нарушений" unit="событий">
+              <ChartBlock title="По нарушениям" unit="тревог">
                 <BarList
-                  label="События по типам"
-                  unit="событий"
+                  label="Тревоги по нарушениям"
+                  unit="тревог"
                   bars={entries(stats.by_type).map<Bar>((e) => ({ key: e.key, label: typeTitle(e.key), value: e.value, href: journal({ type: e.key }) }))}
                 />
               </ChartBlock>
-              <ChartBlock title="По камерам" unit="событий">
+              <ChartBlock title="По камерам" unit="тревог">
                 <BarList
-                  label="События по камерам"
-                  unit="событий"
+                  label="Тревоги по камерам"
+                  unit="тревог"
                   bars={entries(stats.by_camera).map<Bar>((e) => ({ key: e.key, label: cameraName(e.key), value: e.value, href: journal({ camera_id: e.key }) }))}
                 />
               </ChartBlock>
-              <ChartBlock title="По статусам" unit="событий">
+              <ChartBlock title="По решению оператора" unit="тревог">
                 <BarList
-                  label="События по статусам"
-                  unit="событий"
+                  label="Тревоги по решению оператора"
+                  unit="тревог"
                   bars={entries(stats.by_status).map<Bar>((e) => ({
                     key: e.key,
                     label: STATUS_LABEL[e.key as keyof typeof STATUS_LABEL] ?? e.key,
@@ -106,28 +99,28 @@ export function EventsSection({ catalog, server }: Props) {
                   }))}
                 />
               </ChartBlock>
-              <ChartBlock title="По критичности" unit="событий">
+              <ChartBlock title="По опасности" unit="тревог">
                 <BarList
-                  label="События по критичности"
-                  unit="событий"
+                  label="Тревоги по опасности"
+                  unit="тревог"
                   bars={entries(stats.by_severity).map<Bar>((e) => ({ key: e.key, label: SEVERITY_LABEL[e.key] ?? e.key, value: e.value }))}
                 />
               </ChartBlock>
             </div>
 
-            <ChartBlock title="По часу тревоги" unit="событий" note="Час ts_confirm по местному времени сервера, сумма за период">
+            <ChartBlock title="По часам суток" unit="тревог" note="Час тревоги по времени сервера, сумма за период.">
               <ColumnChart
-                label="События по часу тревоги"
-                unit="событий"
+                label="Тревоги по часам суток"
+                unit="тревог"
                 columns={stats.by_hour.map((v, h) => ({ key: String(h), label: `${h}:00–${h}:59`, value: v, tick: h % 3 === 0 ? String(h) : '' }))}
               />
             </ChartBlock>
 
             {Object.keys(stats.by_day).length > 1 && (
-              <ChartBlock title="По дням" unit="событий">
+              <ChartBlock title="По дням" unit="тревог">
                 <ColumnChart
-                  label="События по дням"
-                  unit="событий"
+                  label="Тревоги по дням"
+                  unit="тревог"
                   height={120}
                   columns={Object.entries(stats.by_day).map(([day, v]) => {
                     const label = dayFmt.format(new Date(`${day}T12:00:00`))
@@ -148,9 +141,9 @@ function FalseShare({ stats }: { stats: Record<string, number> }) {
   const falseCount = stats.false ?? 0
   return (
     <StatTile
-      label="Ложные среди обработанных"
+      label="Ложные среди разобранных"
       value={decided > 0 ? fmtPct(share(falseCount, decided)) : '—'}
-      note={decided > 0 ? `${fmt(falseCount)} из ${fmt(decided)} решений оператора` : 'оператор ещё не принимал решений'}
+      note={decided > 0 ? `${fmt(falseCount)} из ${fmt(decided)} решений оператора` : 'Оператор ещё не разбирал тревоги'}
     />
   )
 }

@@ -34,8 +34,8 @@ export function PerformanceSection() {
   const list = result.data
 
   return (
-    <Section id="perf" title="Производительность: ONNX и LinQ TPU" source="GET /api/benchmarks" state={result} onRetry={reload} what="замеры">
-      {list && (list.length === 0 ? <p className="feed-empty muted">Замеров нет: reports/benchmarks.json пуст</p> : <Perf list={list} />)}
+    <Section id="perf" title="Скорость работы на LinQ" source="GET /api/benchmarks" state={result} onRetry={reload} what="замеры">
+      {list && (list.length === 0 ? <p className="empty">Замеров скорости пока нет</p> : <Perf list={list} />)}
     </Section>
   )
 }
@@ -53,34 +53,38 @@ function Perf({ list }: { list: Benchmark[] }) {
       <div className="kpi-row">
         {bestOnnx && (
           <StatTile
-            label="ONNX Runtime, наибольшая пропускная способность"
+            label="На обычном процессоре (ONNX)"
             value={fmt(bestOnnx.fps, 2)}
             unit="кадра/с"
-            note={`${bestOnnx.device}, ${bestOnnx.precision}, ${bestOnnx.streams} пот., суммарно. Измерено`}
+            note={`Измерено: ${bestOnnx.device}, ${bestOnnx.streams} пот. суммарно`}
           />
         )}
         {bestService && (
           <StatTile
-            label="LinQ TPU через облачный стенд"
+            label="LinQ через облачный стенд"
             value={fmt(bestService.fps, 2)}
             unit="кадра/с"
-            note={`${bestService.precision}, ${bestService.streams} пот., суммарно, с сетью и очередью сервиса. Измерено`}
+            note={`Измерено вместе с сетью и очередью стенда, ${bestService.streams} пот. суммарно`}
           />
         )}
         {accelRec && (
           <StatTile
-            label="LinQ TPU, только время ускорителя"
+            label="Ускоритель LinQ, один кадр"
             value={fmt(accelRec.latency_ms.infer, 1)}
-            unit="мс на кадр"
-            note={`Без пре- и постобработки, сети и очереди. Пропускная способность по этому времени ${fmt(accelRec.fps, 2)} кадра/с: расчёт`}
+            unit="мс"
+            note={`Только работа ускорителя, без сети и подготовки кадра. По этому времени ${fmt(accelRec.fps, 2)} кадра/с, это расчёт`}
           />
         )}
       </div>
 
       <SourceNote>
-        Время ускорителя и полный путь кадра через облачный стенд — разные величины. Задержку тревоги для LinQ определяет полный путь.
+        Время ускорителя и путь кадра через облачный стенд измерены отдельно. Скорость тревоги на стенде определяет полный путь кадра.
       </SourceNote>
 
+      <Calculator list={list} />
+
+      <details className="more">
+        <summary>Все замеры и графики</summary>
       <div className="chart-grid">
         {onnx.length > 0 && (
           <ChartBlock title={`${KIND_LABEL.onnx}: пропускная способность по числу потоков`} unit="кадров/с суммарно">
@@ -108,9 +112,7 @@ function Perf({ list }: { list: Benchmark[] }) {
         )}
       </div>
 
-      <Calculator list={list} />
-
-      <h4>Все замеры</h4>
+      <h4>Таблица замеров</h4>
       <div className="table-wrap">
         <table className="data-table">
           <thead>
@@ -153,6 +155,7 @@ function Perf({ list }: { list: Benchmark[] }) {
         Кадров/с — суммарно по всем потокам замера (CONTRACT.md, раздел 8). total — время на кадр по пропускной способности, при нескольких
         потоках кадры обрабатываются параллельно, поэтому задержка одного кадра больше total.
       </p>
+      </details>
     </>
   )
 }
@@ -171,7 +174,7 @@ function Calculator({ list }: { list: Benchmark[] }) {
   const countValid = count.trim() !== '' && Number.isInteger(countNum) && countNum > 0
 
   if (!contract) {
-    return <p className="feed-empty muted">Калькулятор недоступен: в замерах нет записей backend = linq</p>
+    return <p className="empty">Расчёт плат недоступен: нет замеров LinQ</p>
   }
 
   const perBoard = valid ? camerasPerBoard(contract.fps, fpsNum) : 0
@@ -179,10 +182,10 @@ function Calculator({ list }: { list: Benchmark[] }) {
 
   return (
     <div className="calc" data-section="calc">
-      <h4>Камер на одну плату LinQ</h4>
+      <h4>Сколько камер потянет одна плата LinQ</h4>
       <div className="calc-inputs">
         <label>
-          <span>Частота анализа камеры, кадров/с</span>
+          <span className="field-label">Кадров в секунду с камеры</span>
           <input type="number" min={0.1} max={30} step="any" value={camFps} onChange={(e) => setCamFps(e.target.value)} />
         </label>
         <div className="calc-presets" role="group" aria-label="Частота анализа">
@@ -193,26 +196,26 @@ function Calculator({ list }: { list: Benchmark[] }) {
           ))}
         </div>
         <label>
-          <span>Камер на объекте</span>
+          <span className="field-label">Камер на объекте</span>
           <input type="number" min={1} step={1} placeholder="например, 50" value={count} onChange={(e) => setCount(e.target.value)} />
         </label>
       </div>
 
       {!valid ? (
-        <p className="form-error">Частота камеры: число больше 0 и не больше 30</p>
+        <p className="form-error">Введите число кадров в секунду больше 0 и не больше 30</p>
       ) : (
         <div className="calc-results">
           <div className="calc-result" data-calc="contract">
-            <div className="stat-label">По формуле контракта, {KIND_LABEL[benchKind(contract)]}</div>
+            <div className="stat-label">По лучшему замеру: {KIND_LABEL[benchKind(contract)]}</div>
             <div className="stat-value">{cameras(perBoard)}</div>
             <div className="stat-note muted">
-              floor({fmt(contract.fps, 3)} / {fmt(fpsNum, 2)}) = {perBoard}. Расчёт, не замер
-              {benchKind(contract) === 'linq-accelerator' ? ': без сети, очереди и обработки кадра' : ''}.
+              {fmt(contract.fps, 2)} кадра/с ÷ {fmt(fpsNum, 2)} с округлением вниз. Это расчёт
+              {benchKind(contract) === 'linq-accelerator' ? ' без сети, очереди и подготовки кадра' : ''}.
             </div>
             {countValid && (
               <div className="calc-boards">
                 {perBoard > 0
-                  ? `Для ${cameras(countNum)}: ${boards(boardsNeeded(countNum, perBoard)!)}, ceil(${countNum} / ${perBoard})`
+                  ? `Для ${cameras(countNum)} нужно: ${boards(boardsNeeded(countNum, perBoard)!)}`
                   : 'Одна плата не обработает и одну камеру с такой частотой'}
               </div>
             )}
@@ -222,8 +225,7 @@ function Calculator({ list }: { list: Benchmark[] }) {
               <div className="stat-label">Через облачный стенд, по измеренным {fmt(service.fps, 2)} кадра/с</div>
               <div className="stat-value">{cameras(perBoardService)}</div>
               <div className="stat-note muted">
-                floor({fmt(service.fps, 3)} / {fmt(fpsNum, 2)}) = {perBoardService}.{' '}
-                {perBoardService === 0 ? 'Стенд не тянет одну камеру с такой частотой.' : ''}
+                {perBoardService === 0 ? 'Стенд не успевает обработать даже одну камеру с такой частотой.' : 'Расчёт по измеренной скорости стенда.'}
               </div>
             </div>
           )}

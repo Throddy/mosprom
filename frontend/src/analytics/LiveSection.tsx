@@ -17,17 +17,15 @@ export function LiveSection({ catalog }: { catalog: Catalog }) {
       {status && (
         <>
           {test ? (
-            <SourceNote kind="test">
-              Тестовый режим сервера (backend = fixtures): кадры/с и задержка не измеряются, сервер подставляет постоянные значения.
-            </SourceNote>
+            <SourceNote kind="test">Тестовый режим сервера: скорость и задержка не измеряются.</SourceNote>
           ) : (
             <SourceNote>
-              Детектор: {status.detector} ({status.backend}). Задержка — время от получения кадра до результата правил (CONTRACT.md,
-              раздел 6).
+              Обновляется каждые 5 секунд. Задержка: сколько проходит от получения кадра до проверки нарушений. Модель {status.detector}
+              ({status.backend}).
             </SourceNote>
           )}
           {status.cameras.length === 0 ? (
-            <p className="feed-empty muted">Камер нет</p>
+            <p className="empty">Камеры не подключены</p>
           ) : (
             <div className="table-wrap">
               <table className="data-table">
@@ -35,7 +33,7 @@ export function LiveSection({ catalog }: { catalog: Catalog }) {
                   <tr>
                     <th scope="col">Камера</th>
                     <th scope="col">Состояние</th>
-                    <th scope="col" className="num">Кадров/с</th>
+                    <th scope="col" className="num">Кадров в секунду</th>
                     <th scope="col" className="num">Задержка, мс</th>
                   </tr>
                 </thead>
@@ -43,10 +41,10 @@ export function LiveSection({ catalog }: { catalog: Catalog }) {
                   {status.cameras.map((c) => (
                     <tr key={c.id} data-camera={c.id}>
                       <td>
-                        {name(c.id)} <code className="muted">{c.id}</code>
+                        {name(c.id)}
                       </td>
                       <td>
-                        <span className={`dot ${c.online ? 'dot-on' : 'dot-off'}`} /> {c.online ? 'в сети' : 'не в сети'}
+                        <span className={`dot ${c.online ? 'dot-on' : 'dot-off'}`} aria-hidden="true" /> {c.online ? 'В сети' : 'Нет сигнала'}
                       </td>
                       <td className="num">{test ? <span className="muted">не измерено</span> : fmt(c.fps, 1)}</td>
                       <td className="num">{test ? <span className="muted">не измерено</span> : fmt(c.latency_ms, 1)}</td>

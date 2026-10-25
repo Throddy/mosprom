@@ -39,6 +39,15 @@ export function formatFull(ts: number): string {
   return fullFmt.format(new Date(ts * 1000))
 }
 
+// «только что», «5 мин назад», «3 ч назад»; старше суток — null, достаточно даты
+export function formatAgo(ts: number, nowMs = Date.now()): string | null {
+  const sec = Math.floor(nowMs / 1000 - ts)
+  if (sec < 60) return 'только что'
+  if (sec < 3600) return `${Math.floor(sec / 60)} мин назад`
+  if (sec < 24 * 3600) return `${Math.floor(sec / 3600)} ч назад`
+  return null
+}
+
 export function formatDuration(sec: number): string {
   const s = Math.max(0, Math.round(sec))
   if (s < 60) return `${s} с`

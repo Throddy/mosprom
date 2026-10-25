@@ -1,50 +1,90 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
+import { isTestMode } from '../api/source.ts'
+import type { ServerStatus } from '../api/useServerStatus.ts'
 import { EventDetails } from '../components/EventDetails.tsx'
+import { navigate, routeHref } from '../router.ts'
 import { AlertCard } from './AlertCard.tsx'
 import { sortFeed } from './feed.ts'
 import type { AlertFeed as Feed, Connection } from './useAlertFeed.ts'
+import { useNow } from './useNow.ts'
 
-type View = 'all' | 'new'
+interface Props {
+  feed: Feed
+  params: URLSearchParams
+  server: ServerStatus
+}
 
-export function AlertFeed({ feed }: { feed: Feed }) {
-  const [view, setView] = useState<View>('all')
-  const [detailsId, setDetailsId] = useState<string | null>(null)
+// Вид и открытая тревога хранятся в адресе: ?show=all, ?event=<id>. Ссылки с обзора открывают тревогу сразу,
+// кнопка «Назад» телефона закрывает окно
+export function AlertFeed({ feed, params, server }: Props) {
+  const showAll = params.get('show') === 'all'
+  const detailsId = params.get('event')
+  const now = useNow()
+  const testMode = isTestMode(server)
 
   const sorted = useMemo(() => sortFeed(feed.events), [feed.events])
   const unhandled = useMemo(() => sorted.filter((e) => e.status === 'new'), [sorted])
   const unhandledCritical = unhandled.filter((e) => e.severity === 'critical').length
-  const shown = view === 'new' ? unhandled : sorted
+  const shown = showAll ? sorted : unhandled
+  // Всего новых на сервере: загруженные и те, что за пределами окна ленты
+  const newTotal = unhandled.length + feed.hiddenNew
+
+  const href = (next: { all?: boolean; event?: string | null }) => {
+    const p: Record<string, string> = {}
+    if (next.all ?? showAll) p.show = 'all'
+    const ev = next.event === undefined ? detailsId : next.event
+    if (ev) p.event = ev
+    return routeHref('alerts', p)
+  }
 
   return (
-    <section className="feed" aria-labelledby="feed-title">
-      <div className="feed-bar">
-        <div className="feed-heading">
-          <h2 id="feed-title">Лента тревог</h2>
+    <section className="page" aria-labelledby="feed-title">
+      <div className="page-head">
+        <div>
+          <h2 id="feed-title">Тревоги</h2>
           <ConnectionState connection={feed.connection} />
-        </div>
-        <div className="feed-counters">
-          <span>
-            Необработанных: <strong>{unhandled.length}</strong>
-          </span>
-          {unhandledCritical > 0 && (
-            <span className="counter-critical">
-              критичных: <strong>{unhandledCritical}</strong>
-            </span>
-          )}
-        </div>
-        <div className="segmented" role="group" aria-label="Показать">
-          <button type="button" aria-pressed={view === 'all'} onClick={() => setView('all')}>
-            Все ({sorted.length})
-          </button>
-          <button type="button" aria-pressed={view === 'new'} onClick={() => setView('new')}>
-            Необработанные ({unhandled.length})
-          </button>
         </div>
       </div>
 
+      <p className="page-lead">
+        {newTotal === 0 ? (
+          'Новых тревог нет.'
+        ) : (
+          <>
+            Ждут решения: <strong>{newTotal}</strong>
+            {unhandledCritical > 0 && (
+              <>
+                , {feed.hiddenNew > 0 ? 'критичных среди показанных' : 'из них критичных'}:{' '}
+                <strong className="text-danger">{unhandledCritical}</strong>
+              </>
+            )}
+          </>
+        )}
+      </p>
+
+      <div className="segmented" role="group" aria-label="Какие тревоги показать">
+        <button type="button" aria-pressed={!showAll} onClick={() => navigate(href({ all: false }), true)}>
+          Новые ({unhandled.length})
+        </button>
+        <button type="button" aria-pressed={showAll} onClick={() => navigate(href({ all: true }), true)}>
+          Все ({sorted.length})
+        </button>
+      </div>
+
+      {feed.hiddenNew > 0 && !showAll && (
+        <div className="notice notice-info" role="status">
+          <span>
+            Показаны последние {unhandled.length}. Ещё {feed.hiddenNew} более ранних новых тревог в журнале.
+          </span>
+          <a className="btn btn-sm" href={routeHref('journal', { status: 'new' })}>
+            Открыть журнал
+          </a>
+        </div>
+      )}
+
       {feed.loadError && (
         <div className="notice notice-error" role="alert">
-          <span>Не удалось загрузить события: {feed.loadError}</span>
+          <span>Не удалось загрузить тревоги: {feed.loadError}</span>
           <button type="button" className="btn" onClick={feed.reload}>
             Повторить
           </button>
@@ -52,13 +92,21 @@ export function AlertFeed({ feed }: { feed: Feed }) {
       )}
 
       {!feed.loaded && !feed.loadError ? (
-        <p className="feed-empty muted">Загрузка событий…</p>
+        <p className="empty">Загружаем тревоги…</p>
       ) : shown.length === 0 ? (
         feed.loaded && (
-          <p className="feed-empty muted">{view === 'new' ? 'Необработанных тревог нет' : 'Тревог нет'}</p>
+          <div className="empty">
+            <p className="empty-title">{showAll ? 'Тревог пока не было' : 'Новых тревог нет'}</p>
+            <p className="muted">Система следит за камерами. Новая тревога появится здесь автоматически.</p>
+            {!showAll && sorted.length > 0 && (
+              <button type="button" className="btn" onClick={() => navigate(href({ all: true }), true)}>
+                Показать разобранные ({sorted.length})
+              </button>
+            )}
+          </div>
         )
       ) : (
-        <div className="feed-list">
+        <div className="alert-list">
           {shown.map((event) => (
             <AlertCard
               key={event.id}
@@ -66,21 +114,25 @@ export function AlertFeed({ feed }: { feed: Feed }) {
               fresh={event.id in feed.fresh}
               pending={feed.pending[event.id]}
               error={feed.actionErrors[event.id]}
+              testMode={testMode}
+              now={now}
               onStatus={feed.setStatus}
-              onDetails={(e) => setDetailsId(e.id)}
+              onDetails={(e) => navigate(href({ event: e.id }))}
             />
           ))}
         </div>
       )}
 
-      {detailsId && (
+      {detailsId && (feed.loaded || detailsId in feed.events) && (
         <EventDetails
+          key={detailsId}
           eventId={detailsId}
           event={feed.events[detailsId] ?? null}
           pending={feed.pending[detailsId]}
           error={feed.actionErrors[detailsId]}
+          testMode={testMode}
           onStatus={feed.setStatus}
-          onClose={() => setDetailsId(null)}
+          onClose={() => navigate(href({ event: null }), true)}
         />
       )}
     </section>
@@ -90,21 +142,21 @@ export function AlertFeed({ feed }: { feed: Feed }) {
 export function ConnectionState({ connection }: { connection: Connection }) {
   if (connection.state === 'open') {
     return (
-      <span className="conn">
-        <span className="dot dot-on" /> обновляется в реальном времени
-      </span>
+      <p className="conn">
+        <span className="dot dot-on" aria-hidden="true" /> Обновляется автоматически
+      </p>
     )
   }
   if (connection.state === 'connecting') {
     return (
-      <span className="conn muted">
-        <span className="dot dot-wait" /> подключение к <code>/ws/events</code>…
-      </span>
+      <p className="conn muted">
+        <span className="dot dot-wait" aria-hidden="true" /> Подключаемся к серверу…
+      </p>
     )
   }
   return (
-    <span className="conn conn-off" role="status">
-      <span className="dot dot-off" /> нет связи с <code>/ws/events</code>, повтор через {connection.retryInSec} с
-    </span>
+    <p className="conn conn-off" role="status">
+      <span className="dot dot-off" aria-hidden="true" /> Нет связи, новые тревоги не приходят. Повтор через {connection.retryInSec} с
+    </p>
   )
 }

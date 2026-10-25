@@ -11,17 +11,22 @@ interface Props {
   cameraName: string
   // backend = fixtures в /api/status: сервер отдаёт синтетические кадры
   testMode: boolean
+  // true: поток не открывается (вкладка скрыта), соединение с сервером освобождается
+  paused?: boolean
+  // подпись под видео; в сетке монитора не нужна
+  note?: boolean
 }
 
 // MJPEG из GET /api/cameras/{id}/stream в <img>. Первый кадр определяется по naturalWidth:
 // событие load для multipart-ответа браузеры вызывают не одинаково
-export function CameraStream({ cameraId, cameraName, testMode }: Props) {
+export function CameraStream({ cameraId, cameraName, testMode, paused = false, note = true }: Props) {
   const [attempt, setAttempt] = useState(0)
   const [state, setState] = useState<StreamState>('connecting')
   const imgRef = useRef<HTMLImageElement>(null)
   const attemptRef = useRef(0)
 
   useEffect(() => {
+    if (paused) return
     const current = attempt
     attemptRef.current = current
     setState('connecting')
@@ -46,35 +51,25 @@ export function CameraStream({ cameraId, cameraName, testMode }: Props) {
       // Пустой src закрывает соединение потока при уходе со страницы
       if (img) img.removeAttribute('src')
     }
-  }, [attempt, cameraId])
+  }, [attempt, cameraId, paused])
 
   const onError = () => {
     if (attemptRef.current === attempt) setState('error')
   }
 
+  const shown = paused ? 'paused' : state
+
   return (
     <div className="stream">
-      <div className={`stream-frame stream-${state}`}>
-        <img
-          key={`${cameraId}-${attempt}`}
-          ref={imgRef}
-          alt={`Видеопоток: ${cameraName}`}
-          onError={onError}
-        />
-        {state !== 'live' && (
+      <div className={`stream-frame stream-${shown}`} data-stream-state={shown}>
+        <img key={`${cameraId}-${attempt}`} ref={imgRef} alt={`Видео с камеры: ${cameraName}`} onError={onError} />
+        {shown !== 'live' && (
           <div className="stream-overlay" role="status">
-            {state === 'connecting' && <p>Подключение к видеопотоку…</p>}
-            {state === 'error' && (
-              <p>
-                Видеопоток недоступен: <code>{streamUrl(cameraId)}</code> вернул ошибку.
-              </p>
-            )}
-            {state === 'timeout' && (
-              <p>
-                Видеопоток не передаёт кадры {FIRST_FRAME_MS / 1000} с. Источник камеры не открыт или кадров ещё нет.
-              </p>
-            )}
-            {(state === 'error' || state === 'timeout') && (
+            {shown === 'paused' && <p>Видео на паузе, пока вкладка скрыта</p>}
+            {shown === 'connecting' && <p>Подключаемся к камере…</p>}
+            {shown === 'error' && <p>Видео с камеры недоступно</p>}
+            {shown === 'timeout' && <p>Камера не передаёт изображение {FIRST_FRAME_MS / 1000} секунд</p>}
+            {(shown === 'error' || shown === 'timeout') && (
               <button type="button" className="btn" onClick={() => setAttempt((a) => a + 1)}>
                 Повторить
               </button>
@@ -82,11 +77,13 @@ export function CameraStream({ cameraId, cameraName, testMode }: Props) {
           </div>
         )}
       </div>
-      <p className="stream-note muted">
-        {testMode
-          ? 'Сервер в тестовом режиме (/api/status: backend = fixtures): кадр синтетический, детекций нет.'
-          : 'Кадры с треками и зонами от сервера.'}
-      </p>
+      {note && (
+        <p className="stream-note muted">
+          {testMode
+            ? 'Тестовый режим сервера: кадр синтетический, нейросеть не работает.'
+            : 'Люди и техника обведены рамками, опасные зоны отмечены красным контуром.'}
+        </p>
+      )}
     </div>
   )
 }
