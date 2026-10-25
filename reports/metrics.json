@@ -17,9 +17,9 @@
     },
     "proximity": {
       "tp": 3,
-      "fp": 3,
+      "fp": 1,
       "fn": 0,
-      "precision": 0.5,
+      "precision": 0.75,
       "recall": 1.0
     },
     "running": {
