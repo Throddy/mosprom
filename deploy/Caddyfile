@@ -1,14 +1,19 @@
 {$DOMAIN} {
     encode gzip
 
-    # HLS (BE-19): плейлисты и сегменты из HLS_DIR по умолчанию отдаёт Caddy, без бэкенда
-    handle /hls/* {
-        root * /opt/mosprom/backend/data
-        @playlist path *.m3u8
-        header @playlist Cache-Control "no-cache"
-        @segment path *.ts
-        header @segment Cache-Control "max-age=60"
-        file_server
+    # HLS (BE-19): плейлисты и сегменты отдаёт Caddy из HLS_DIR по умолчанию, без бэкенда.
+    # Корень — только папка hls, и только .m3u8 и .ts; остальное под /hls/ — 404
+    handle_path /hls/* {
+        root * /opt/mosprom/backend/data/hls
+        @hls path *.m3u8 *.ts
+        handle @hls {
+            @playlist path *.m3u8
+            header @playlist Cache-Control "no-cache"
+            @segment path *.ts
+            header @segment Cache-Control "max-age=60"
+            file_server
+        }
+        respond 404
     }
 
     handle {

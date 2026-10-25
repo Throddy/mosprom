@@ -88,7 +88,7 @@ else
     echo "$ENV_FILE создан из deploy/env.demo"
 fi
 setting() { grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2-; }
-for key in PIPELINE DETECTOR_BACKEND READ_ONLY BLUR_FACES CAMERAS_PATH BACKEND_HOST BACKEND_PORT STREAM_FPS \
+for key in PIPELINE DETECTOR_BACKEND READ_ONLY BLUR_FACES CAMERAS_BASE CAMERAS_PATH BACKEND_HOST BACKEND_PORT STREAM_FPS \
         MAX_STREAMS DETECTOR_WORKERS TILED_CAMERAS TILED_WORKERS; do
     echo "  $key=$(setting "$key")"
 done
@@ -97,7 +97,12 @@ bad=""
 [ "$(setting DETECTOR_BACKEND)" = "onnx" ] || bad="$bad DETECTOR_BACKEND=onnx"
 [ "$(setting READ_ONLY)" = "1" ] || bad="$bad READ_ONLY=1"
 [ "$(setting BLUR_FACES)" = "1" ] || bad="$bad BLUR_FACES=1"
-[ "$(setting CAMERAS_PATH)" = "configs/cameras.demo.yaml" ] || bad="$bad CAMERAS_PATH=configs/cameras.demo.yaml"
+# Камеры стенда: прежняя схема — CAMERAS_PATH=configs/cameras.demo.yaml; с BE-20 — базовый файл и файл правок
+if ! { [ "$(setting CAMERAS_PATH)" = "configs/cameras.demo.yaml" ] \
+        || { [ "$(setting CAMERAS_PATH)" = "configs/cameras.demo.local.yaml" ] \
+             && [ "$(setting CAMERAS_BASE)" = "configs/cameras.demo.yaml" ]; }; }; then
+    bad="$bad CAMERAS_PATH=configs/cameras.demo.yaml (или CAMERAS_PATH=configs/cameras.demo.local.yaml и CAMERAS_BASE=configs/cameras.demo.yaml)"
+fi
 [ "$(setting BACKEND_HOST)" = "127.0.0.1" ] || bad="$bad BACKEND_HOST=127.0.0.1"
 [ "$(setting BACKEND_PORT)" = "8000" ] || bad="$bad BACKEND_PORT=8000"
 if [ -n "$bad" ]; then

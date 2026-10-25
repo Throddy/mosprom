@@ -121,7 +121,7 @@ systemctl restart mosprom caddy
 Зачем: MJPEG 1280 px при 15 кадрах/с занимает около 8–14 Мбит/с на зрителя, при канале 100 Мбит/с это меньше 10 зрителей. H.264 при тех же размере и частоте — около 2.2 Мбит/с: 50 зрителей около 110 Мбит/с. Бэкенд кодирует один поток на камеру, нагрузка не зависит от числа зрителей.
 
 - Переменные в `.env`: `HLS_ENABLED=1`, `HLS_BITRATE=1800k`, `STREAM_FPS=15`, `STREAM_WIDTH=1280`, `STREAM_QUALITY=80` (MJPEG, запасной вариант). `HLS_DIR` по умолчанию `backend/data/hls`.
-- Caddy (`deploy/Caddyfile`) отдаёт `/hls/*` сам из `/opt/mosprom/backend/data/hls` (`file_server`, плейлист `no-cache`, сегменты `max-age=60`), остальное — `reverse_proxy` на `127.0.0.1:8000`.
+- Caddy (`deploy/Caddyfile`) отдаёт `/hls/*` сам из `/opt/mosprom/backend/data/hls` (`handle_path`, корень — только папка `hls`, только `.m3u8` и `.ts`, остальное — 404; плейлист `no-cache`, сегменты `max-age=60`), остальное — `reverse_proxy` на `127.0.0.1:8000`.
 - Браузер играет HLS через `<video>`; если плейлиста нет или воспроизведение не началось за 15 с — MJPEG `/api/cameras/<id>/stream`.
 
 Проверка на сервере через 20–30 с после перезапуска:
@@ -149,7 +149,7 @@ curl -sI https://sokol.157.22.134.21.sslip.io/hls/demo_reel/index.m3u8 | head -1
 Стенд в режиме «только просмотр» (`READ_ONLY=1`). С `ADMIN_LOCAL=1` изменения разрешены только запросам через SSH-туннель: они приходят на `127.0.0.1` без заголовков прокси.
 
 1. На Mac: `ssh -p <порт> -L 8000:127.0.0.1:8000 root@157.22.134.21`
-2. Открыть `http://127.0.0.1:8000`: редактор зон и правил работает. Изменения пишутся в `/opt/mosprom/configs/cameras.demo.local.yaml` (`CAMERAS_PATH`), базовый `configs/cameras.demo.yaml` из git не меняется.
+2. Открыть `http://127.0.0.1:8000` (или `http://localhost:8000`): редактор зон и правил работает. Запросы с другим `Origin` получают 403. Туннель держать открытым только на время правки. Изменения пишутся в `/opt/mosprom/configs/cameras.demo.local.yaml` (`CAMERAS_PATH`), базовый `configs/cameras.demo.yaml` из git не меняется.
 3. Сбросить правки:
 
 ```bash
