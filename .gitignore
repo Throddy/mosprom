@@ -3,8 +3,7 @@
 __pycache__/
 .ipynb_checkpoints/
 node_modules/
-frontend/dist/
-ml/weights/
+ml/weights/*
 backend/media/
 backend/data/
 configs/cameras.local.yaml
@@ -15,3 +14,8 @@ configs/cameras.local.yaml
 *.ovpn
 *.npy
 .DS_Store
+# CPU-демо: две модели ONNX и их описание хранятся в git
+!ml/weights/yolov8n-pose.onnx
+!ml/weights/yolov8n.onnx
+!ml/weights/README.md
+!ml/weights/SHA256SUMS

@@ -30,7 +30,7 @@ python3.10 -m venv .venv
 
 ## Веса и ONNX
 
-Веса `.pt`, файлы `.onnx` и программы TPU не хранятся в git. Они лежат в `ml/weights/`.
+В git хранятся только две модели CPU-демо: `ml/weights/yolov8n-pose.onnx` и `ml/weights/yolov8n.onnx`, описание, SHA-256 и лицензия AGPL-3.0 в `ml/weights/README.md`. Веса `.pt`, другие `.onnx` и программы TPU в git не попадают, они лежат в `ml/weights/`. Повторный экспорт ниже меняет SHA-256: после него обновить `ml/weights/SHA256SUMS`.
 
 ```bash
 mkdir -p ml/weights
