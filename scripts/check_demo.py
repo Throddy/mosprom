@@ -489,6 +489,24 @@ def admin_local():
         os.environ.pop("CAMERAS_BASE", None)
 
 
+def admin_local_origin():
+    import json
+    edits = TMP / "origin_cameras.local.yaml"
+    env = {"READ_ONLY": "1", "ADMIN_LOCAL": "1", "CAMERAS_PATH": str(edits), "CAMERAS_BASE": "configs/cameras.yaml"}
+    _, server, thread, port = plain_server(env)
+    try:
+        cam = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/api/cameras", timeout=10).read())[0]
+        for origin, want in (("https://evil.example", 403), ("http://127.0.0.1:8000", 200),
+                             ("http://localhost:8000", 200), ("http://127.0.0.1:8001", 403)):
+            got = put_status(port, cam, {"Origin": origin})
+            expect(got == want, f"Origin {origin}: {got}, want {want}")
+    finally:
+        server.should_exit = True
+        thread.join(15)
+        os.environ.update(READ_ONLY="0", ADMIN_LOCAL="0")
+        os.environ.pop("CAMERAS_BASE", None)
+
+
 def cameras_base():
     import hashlib
     import shutil
@@ -581,6 +599,7 @@ if __name__ == "__main__":
     check("stream_sync", stream_sync)
     check("blur_new_person", blur_new_person)
     check("admin_local", admin_local)
+    check("admin_local_origin", admin_local_origin)
     check("cameras_base", cameras_base)
     check("events_keep", events_keep)
     check("frame_w", frame_w)

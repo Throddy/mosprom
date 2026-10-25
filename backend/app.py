@@ -142,6 +142,10 @@ def scale_view(frame: np.ndarray, items: list[list[dict]], width: int) -> tuple[
     return img, out
 
 
+# Origin страницы, открытой через SSH-туннель ssh -L 8000:127.0.0.1:8000
+ADMIN_ORIGINS = ("http://127.0.0.1:8000", "http://localhost:8000")
+
+
 class HlsFiles(StaticFiles):
     """Статика HLS: плейлист без кэша, сегменты на 60 с."""
 
@@ -170,12 +174,15 @@ def create_app() -> FastAPI:
 
     def check_writable(request: Request) -> None:
         """READ_ONLY: изменения запрещены. ADMIN_LOCAL=1 разрешает их запросам через SSH-туннель:
-        клиент 127.0.0.1 или ::1 и нет заголовков прокси (Caddy всегда добавляет X-Forwarded-For)."""
+        клиент 127.0.0.1 или ::1, нет заголовков прокси (Caddy всегда добавляет X-Forwarded-For) и Origin,
+        если он есть, — сама страница через туннель. Чужой сайт в браузере администратора записать не может."""
         if not read_only:
             return
         host = request.client.host if request.client else ""
         proxied = any(h in request.headers for h in ("x-forwarded-for", "x-real-ip", "forwarded"))
-        if admin_local and host in ("127.0.0.1", "::1") and not proxied:
+        origin = request.headers.get("origin")
+        origin_ok = origin is None or origin in ADMIN_ORIGINS
+        if admin_local and host in ("127.0.0.1", "::1") and not proxied and origin_ok:
             log.info("%s %s: admin local", request.method, sanitize(request.url.path))
             return
         raise HTTPException(403, "Демо-стенд: только просмотр")

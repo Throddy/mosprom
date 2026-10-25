@@ -304,8 +304,8 @@ class Pipeline:
     def view(self, camera_id: str, now: float | None = None) -> dict | None:
         """Кадр показа с ts ≈ now − D и треки на этот ts. None, пока кадров нет.
 
-        covered — есть результат детектора в пределах 2/fps от ts кадра; people — люди из детекций результатов
-        в пределах 1/fps, для размытия."""
+        covered — есть результат детектора в пределах 2/fps от ts кадра; people — люди из детекций тех же
+        результатов, для размытия."""
         cam = self.cams[camera_id]
         now = time.time() if now is None else now
         with cam.lock:
@@ -325,9 +325,11 @@ class Pipeline:
         ts, frame = chosen
         period = 1.0 / fps if fps > 0 else 1.0
         tracks = interpolate(results, ts, period)
-        covered = any(abs(r["ts"] - ts) <= 2 * period for r in results)
-        # Для размытия — люди из результатов до и после кадра в пределах 1/fps, включая неподтверждённые треки
-        people = [p for r in results if abs(r["ts"] - ts) <= period for p in r["people"]]
+        # Одно окно 2/fps: кадр «покрыт», только если люди для размытия берутся из тех же результатов
+        near = [r for r in results if abs(r["ts"] - ts) <= 2 * period]
+        covered = bool(near)
+        # Для размытия — люди из результатов до и после кадра в пределах 2/fps, включая неподтверждённые треки
+        people = [p for r in near for p in r["people"]]
         return {"ts": ts, "frame": frame, "tracks": tracks, "people": people, "covered": covered, "delay": delay}
 
     def snapshot(self, camera_id: str) -> dict:
