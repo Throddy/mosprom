@@ -1,6 +1,19 @@
 {$DOMAIN} {
     encode gzip
-    reverse_proxy 127.0.0.1:8000 {
-        flush_interval -1
+
+    # HLS (BE-19): плейлисты и сегменты из HLS_DIR по умолчанию отдаёт Caddy, без бэкенда
+    handle /hls/* {
+        root * /opt/mosprom/backend/data
+        @playlist path *.m3u8
+        header @playlist Cache-Control "no-cache"
+        @segment path *.ts
+        header @segment Cache-Control "max-age=60"
+        file_server
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:8000 {
+            flush_interval -1
+        }
     }
 }

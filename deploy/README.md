@@ -100,7 +100,7 @@ ss -ltn | grep ':8000 '
 
 ## Обновление на новый коммит
 
-`<SHA>` — полный SHA нового проверенного коммита `main`. `install.sh` ставит текущий checkout и не перезаписывает `/opt/mosprom/.env`:
+`<SHA>` — полный SHA нового проверенного коммита `main`. `install.sh` ставит текущий checkout, заново записывает `/etc/caddy/Caddyfile` и перезапускает `mosprom` и `caddy`; `/opt/mosprom/.env` не перезаписывается:
 
 ```bash
 runuser -u mosprom -- git -C /opt/mosprom fetch origin
@@ -109,26 +109,40 @@ runuser -u mosprom -- git -C /opt/mosprom rev-parse HEAD
 bash /opt/mosprom/deploy/install.sh sokol.157.22.134.21.sslip.io
 ```
 
-`install.sh` не дописывает новые переменные в существующий `.env`: их нужно перенести из `deploy/env.demo` вручную. С BE-18 добавлены или изменены:
-
-```
-ORT_THREADS=6
-TORCH_THREADS=1
-CV2_THREADS=1
-DETECTOR_WORKERS=2
-TILED_WORKERS=2
-STREAM_FPS=10
-STREAM_WIDTH=960
-STREAM_QUALITY=70
-STREAM_DELAY=auto
-```
-
-Записать их в `/opt/mosprom/.env` (строка заменяется, если ключ уже есть, иначе дописывается) и перезапустить:
+`install.sh` не дописывает новые переменные в существующий `.env`: их нужно перенести из `deploy/env.demo` вручную (строка заменяется, если ключ уже есть, иначе дописывается), затем перезапустить сервисы. С BE-18 и BE-19:
 
 ```bash
-for kv in ORT_THREADS=6 TORCH_THREADS=1 CV2_THREADS=1 DETECTOR_WORKERS=2 TILED_WORKERS=2 STREAM_FPS=10 STREAM_WIDTH=960 STREAM_QUALITY=70 STREAM_DELAY=auto; do k="${kv%%=*}"; if grep -q "^$k=" /opt/mosprom/.env; then sed -i "s|^$k=.*|$kv|" /opt/mosprom/.env; else echo "$kv" >> /opt/mosprom/.env; fi; done
-systemctl restart mosprom
+for kv in ORT_THREADS=6 TORCH_THREADS=1 CV2_THREADS=1 DETECTOR_WORKERS=2 TILED_WORKERS=2 STREAM_DELAY=auto HLS_ENABLED=1 HLS_BITRATE=1800k STREAM_FPS=15 STREAM_WIDTH=1280 STREAM_QUALITY=80; do k="${kv%%=*}"; if grep -q "^$k=" /opt/mosprom/.env; then sed -i "s|^$k=.*|$kv|" /opt/mosprom/.env; else echo "$kv" >> /opt/mosprom/.env; fi; done
+systemctl restart mosprom caddy
 ```
+
+## HLS
+
+Зачем: MJPEG 1280 px при 15 кадрах/с занимает около 8–14 Мбит/с на зрителя, при канале 100 Мбит/с это меньше 10 зрителей. H.264 при тех же размере и частоте — около 2.2 Мбит/с: 50 зрителей около 110 Мбит/с. Бэкенд кодирует один поток на камеру, нагрузка не зависит от числа зрителей.
+
+- Переменные в `.env`: `HLS_ENABLED=1`, `HLS_BITRATE=1800k`, `STREAM_FPS=15`, `STREAM_WIDTH=1280`, `STREAM_QUALITY=80` (MJPEG, запасной вариант). `HLS_DIR` по умолчанию `backend/data/hls`.
+- Caddy (`deploy/Caddyfile`) отдаёт `/hls/*` сам из `/opt/mosprom/backend/data/hls` (`file_server`, плейлист `no-cache`, сегменты `max-age=60`), остальное — `reverse_proxy` на `127.0.0.1:8000`.
+- Браузер играет HLS через `<video>`; если плейлиста нет или воспроизведение не началось за 15 с — MJPEG `/api/cameras/<id>/stream`.
+
+Проверка на сервере через 20–30 с после перезапуска:
+
+```bash
+ls /opt/mosprom/backend/data/hls/demo_reel/
+curl -sI https://sokol.157.22.134.21.sslip.io/hls/demo_reel/index.m3u8 | grep -iE "^HTTP|cache-control"
+```
+
+Ожидается `index.m3u8` и `seg_*.ts`, `HTTP/2 200`, `cache-control: no-cache`.
+
+Откат на MJPEG: в `/opt/mosprom/.env` поставить `HLS_ENABLED=0`, перезапустить и удалить сегменты: Caddy отдаёт `/hls` прямо с диска, и без удаления плеер получил бы старый плейлист. После этого плейлист отвечает 404, и плеер показывает MJPEG.
+
+```bash
+sed -i "s|^HLS_ENABLED=.*|HLS_ENABLED=0|" /opt/mosprom/.env
+systemctl restart mosprom
+rm -rf /opt/mosprom/backend/data/hls
+curl -sI https://sokol.157.22.134.21.sslip.io/hls/demo_reel/index.m3u8 | head -1
+```
+
+Ожидается `HTTP/2 404`.
 
 ## Подбор на сервере
 

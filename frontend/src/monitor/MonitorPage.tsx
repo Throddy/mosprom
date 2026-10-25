@@ -5,7 +5,7 @@ import { useCatalog } from '../api/useCatalog.ts'
 import type { ServerStatus } from '../api/useServerStatus.ts'
 import { SEVERITY_LABEL } from '../alerts/feed.ts'
 import type { AlertFeed } from '../alerts/useAlertFeed.ts'
-import { CameraStream } from '../cameras/CameraStream.tsx'
+import { FramePreview } from '../components/LiveVideo.tsx'
 import { navigate, routeHref } from '../router.ts'
 import { FrameStill } from './FrameStill.tsx'
 import { usePageVisible } from './usePageVisible.ts'
@@ -318,7 +318,7 @@ interface TileProps {
   testMode: boolean
 }
 
-function MonitorTile({ camera, online, alerts, liveStream, paused, testMode }: TileProps) {
+function MonitorTile({ camera, online, alerts, liveStream, paused }: TileProps) {
   const latest = alerts[0]
   // Выделение держится, пока у камеры есть тревоги со статусом new; решение оператора его снимает
   const attention = alerts.length > 0
@@ -344,7 +344,7 @@ function MonitorTile({ camera, online, alerts, liveStream, paused, testMode }: T
         }}
       >
         {liveStream ? (
-          <CameraStream cameraId={camera.id} cameraName={camera.name} testMode={testMode} paused={paused} note={false} />
+          <FramePreview cameraId={camera.id} cameraName={camera.name} paused={paused} />
         ) : (
           <FrameStill cameraId={camera.id} cameraName={camera.name} paused={paused} />
         )}
