@@ -20,6 +20,8 @@ interface Props {
 
 type Mode = 'probe' | 'hls' | 'img'
 
+const VIDEO_FIT = { display: 'block', width: '100%', height: '100%', objectFit: 'contain' } as const
+
 export function hlsUrl(cameraId: string): string {
   return `/hls/${encodeURIComponent(cameraId)}/index.m3u8`
 }
@@ -109,7 +111,19 @@ export function LiveVideo({ cameraId, fallbackSrc, className, alt, onLive, onErr
   if (mode === 'img') {
     return <img ref={imgRef} className={className} alt={alt} onError={() => errorRef.current?.()} />
   }
-  return <video ref={videoRef} className={className} autoPlay muted playsInline aria-label={alt} />
+  // Кадр вписывается в рамку целиком, как <img> потока (.stream-frame img): без этого видео шло в своём
+  // размере и обрезалось рамкой 16:9
+  return (
+    <video
+      ref={videoRef}
+      className={className}
+      style={VIDEO_FIT}
+      autoPlay
+      muted
+      playsInline
+      aria-label={alt}
+    />
+  )
 }
 
 // Превью камеры в сетке: кадр /api/cameras/{id}/frame раз в 2 с вместо потока
