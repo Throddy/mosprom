@@ -1,6 +1,6 @@
 # Сквозной прогон видео → тревога на LinQ (ML-4d)
 
-Видео `data/videos/test/fall.mov`: 1920×1080, 30 кадров/с, 33.2 с, 996 кадров. Камера `cam2`: правило `fall`, `min_duration` 3.0 с. Начало падения по разметке ML-7: 6.5 с.
+Сквозной прогон видео через детектор `linq` и правила до тревоги. Видео `data/videos/dev/fall.mov` (тогда лежало в `data/videos/test/`): 1920×1080, 30 кадров/с, 33.2 с, 996 кадров. Камера `cam2`: правило `fall`, `min_duration` 3.0 с. Начало падения по разметке ML-7: 6.5 с.
 
 ```bash
 DETECTOR_BACKEND=onnx .venv/bin/python scripts/run_offline.py --video data/videos/test/fall.mov \
