@@ -48,6 +48,22 @@
 
 В шапке показан детектор сервера из `/api/status`. В режиме `PIPELINE=0` интерфейс помечает события как тестовые.
 
+## Быстрый запуск демо
+
+Для проверки на macOS или Ubuntu 22.04. Нужны Python 3.10 и доступ к репозиторию (он приватный: доступ выдаёт владелец). Модели ONNX, сборка интерфейса и видео демо уже в клоне, Node.js не нужен. Интернет нужен для `git clone` и установки зависимостей Python при первом запуске (около 5 минут).
+
+```bash
+git clone https://github.com/Throddy/mosprom.git
+cd mosprom
+bash scripts/start_demo.sh
+```
+
+- Скрипт проверяет комплект (`scripts/check_distribution.py`), создаёт `.venv` в клоне, ставит зависимости и запускает сервер на `127.0.0.1:8000`. На Linux x86_64 PyTorch ставится без CUDA (`deploy/torch-cpu.txt`).
+- Открыть `http://127.0.0.1:8000`. Две камеры на видео из `data/videos/demo/`: ролик с падением, погрузчиком и бегом (`demo_reel`) и зона у двери (`demo_zone`). Детектор `onnx` на CPU, без LinQ и трансляций. Первые тревоги приходят через 10–30 с.
+- Остановка: `Ctrl+C`. Повторный запуск зависимости не переустанавливает.
+- `.env` не читается и не меняется. База событий и изменения камер локального демо: `backend/data/demo/`. Другой порт: `bash scripts/start_demo.sh --port 8010`.
+- Если нет Python 3.10 или системных библиотек OpenCV, скрипт пишет, что установить, и останавливается.
+
 ## Установка
 
 Нужны Python 3.10 и Node.js `^20.19.0` или `>=22.12.0`.
@@ -71,9 +87,9 @@ npm run build
 cd ..
 ```
 
-Сборка попадает в `frontend/dist/`, бэкенд раздаёт её по `/`.
+Сборка попадает в `frontend/dist/`, бэкенд раздаёт её по `/`. Готовая сборка хранится в git: после изменения `frontend/src/` её нужно пересобрать и закоммитить вместе с исходниками.
 
-Веса для `PIPELINE=1` и детектора `onnx` в git не хранятся. Экспорт в `ml/weights/`:
+Модели `ml/weights/yolov8n-pose.onnx` и `ml/weights/yolov8n.onnx` хранятся в git, контрольные суммы и лицензия: `ml/weights/README.md`. Проверка комплекта: `python3 scripts/check_distribution.py`. Повторный экспорт (меняет SHA-256 и требует обновить `ml/weights/SHA256SUMS`):
 
 ```bash
 mkdir -p ml/weights
@@ -110,7 +126,7 @@ PIPELINE=0 .venv/bin/python -m backend
 
 ### ONNX
 
-Нужны веса в `ml/weights/`. Камеры `cam1` и `cam2` из `configs/cameras.yaml` читают `data/demo.mp4`.
+Модели в `ml/weights/` уже в клоне. Камеры `cam1` и `cam2` из `configs/cameras.yaml` читают `data/demo.mp4`.
 
 ```bash
 PIPELINE=1 DETECTOR_BACKEND=onnx .venv/bin/python -m backend
@@ -170,12 +186,12 @@ DETECTOR_BACKEND=linq .venv/bin/python scripts/run_offline.py --video data/video
 
 ## Данные
 
-- Видео: [общая папка Google Drive](https://drive.google.com/drive/folders/1C3LXUnZaJUyxtx8AN3Qvn1urIRsPHx4e?usp=sharing). В git они не попадают.
+- Видео: в git, до 95 МБ на файл, состав в `data/README.md`. Исходники 4K: [общая папка Google Drive](https://drive.google.com/drive/folders/1C3LXUnZaJUyxtx8AN3Qvn1urIRsPHx4e?usp=sharing).
 - `data/videos/dev/`: видео для подбора порогов.
 - `data/videos/test/`: независимый контрольный набор для метрик ML-7.
 - Разметка контрольного набора: `data/test_set/labels.csv`, формат `video,type,t_start,t_end`, время в секундах от начала видео. В ней `fall_02.mov`, `running_03.mov`, `running_04.mov` и `danger_zone_02.mov`. Видео без нарушений строк не имеют.
 - Описание наборов и видео без нарушений: `data/test_set/README.md`.
-- Видео для smoke-теста и демо-камер: `data/demo.mp4`.
+- Видео для smoke-теста: `data/demo.mp4`; видео демо-стенда и локального демо: `data/videos/demo/`.
 
 ## Результаты
 

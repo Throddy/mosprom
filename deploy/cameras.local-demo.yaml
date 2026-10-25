@@ -1,0 +1,22 @@
+# Камеры локального демо (scripts/start_demo.sh): только видео из репозитория, без трансляций.
+# start_demo.sh копирует этот файл в backend/data/demo/cameras.yaml, изменения из интерфейса пишутся туда.
+cameras:
+  - id: demo_reel
+    name: "Склад: смена (ролик)"
+    source: data/videos/demo/reel.mp4
+    fps: 10
+    zones: []
+    rules:
+      - {type: fall, enabled: true}
+      - {type: running, enabled: true}
+      - {type: proximity, enabled: true}
+  - id: demo_zone
+    name: "Склад: зона у двери"
+    source: data/videos/demo/danger_zone.mp4
+    fps: 5
+    zones:
+      - id: tape
+        name: Зона по скотчу
+        polygon: [[0.13, 0.97], [0.36, 0.82], [0.28, 0.73], [0.15, 0.69], [0.05, 0.69], [0.05, 1.0]]
+    rules:
+      - {type: danger_zone, enabled: true, zone: tape}

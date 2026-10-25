@@ -27,23 +27,16 @@ python3.10 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-Если `python3.10` нет, подойдёт любой интерпретатор 3.10: проверить `python3 --version`. Установка пакетов занимает около 5 минут.
+Если `python3.10` нет, подойдёт любой интерпретатор 3.10: проверить `python3 --version`. Установка пакетов занимает около 5 минут. На Linux x86_64 PyTorch ставится без CUDA: `bash deploy/python_deps.sh .venv/bin/python`.
 
-Веса детектора `onnx` (около 1 минуты, скачиваются с GitHub Ultralytics):
-
-```bash
-mkdir -p ml/weights
-cd ml/weights
-../../.venv/bin/python -c "from ultralytics import YOLO; YOLO('yolov8n-pose.pt').export(format='onnx', imgsz=640); YOLO('yolov8n.pt').export(format='onnx', imgsz=640)"
-cd ../..
-```
-
-Фронтенд:
+Модели `onnx` (`ml/weights/*.onnx`) и сборка фронтенда (`frontend/dist/`) хранятся в git. Проверка комплекта: `python3 scripts/check_distribution.py`. Пересборка фронтенда после изменения `frontend/src/`, `dist` коммитится вместе с исходниками:
 
 ```bash
 npm --prefix frontend ci
 npm --prefix frontend run build
 ```
+
+Локальное демо одной командой, без `.env`: `bash scripts/start_demo.sh` (раздел «Быстрый запуск демо» в `README.md`).
 
 Сервер. Переменные из `.env` сервер сам не читает, их нужно выгрузить в окружение:
 

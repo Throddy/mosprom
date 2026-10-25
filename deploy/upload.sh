@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Загрузка на сервер файлов, которых нет в git: веса onnx и сборка фронтенда.
-# Видео стенда (data/videos/demo/) приходят с git clone.
+# Необязательно: модели onnx, сборка фронтенда и видео стенда уже в git и приходят с клоном.
+# Скрипт копирует с Mac ml/weights/*.onnx и frontend/dist/ по SSH, например чтобы проверить новую сборку
+# без коммита. Нужен SSH-ключ на Mac; для первого запуска не используется (deploy/README.md).
 # Запуск на Mac из корня репозитория: bash deploy/upload.sh <user@host>
 set -euo pipefail
 

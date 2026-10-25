@@ -27,7 +27,7 @@
 │   ├── __init__.py          create_detector()
 │   ├── requirements.txt
 │   ├── README.md            модели, веса, путь до TPU, замеры
-│   └── weights/             в git не попадает
+│   └── weights/             в git только yolov8n-pose.onnx, yolov8n.onnx, README.md, SHA256SUMS
 │
 ├── logic/                   Максим    трекинг и движок правил
 │   ├── __init__.py
@@ -41,13 +41,13 @@
 │
 ├── frontend/                Никитос
 │   ├── package.json
-│   └── dist/                сборка, в git не попадает
+│   └── dist/                сборка, в git: пересобирается и коммитится с frontend/src/
 │
 ├── scripts/                 Максим
 │   ├── run_offline.py
 │   └── smoke.py
 │
-├── deploy/                  Максим    развёртывание демо-стенда: install.sh, upload.sh, systemd, Caddy
+├── deploy/                  Максим    развёртывание: install.sh, python_deps.sh, torch-cpu.txt, systemd, Caddy, локальное демо
 │
 ├── notebooks/               Аня       работа на сервере LinQ
 │
@@ -76,8 +76,7 @@
 __pycache__/
 .ipynb_checkpoints/
 node_modules/
-frontend/dist/
-ml/weights/
+ml/weights/*
 backend/media/
 backend/data/
 configs/cameras.local.yaml
@@ -88,4 +87,9 @@ configs/cameras.local.yaml
 *.ovpn
 *.npy
 .DS_Store
+# CPU-демо: две модели ONNX и их описание хранятся в git
+!ml/weights/yolov8n-pose.onnx
+!ml/weights/yolov8n.onnx
+!ml/weights/README.md
+!ml/weights/SHA256SUMS
 ```

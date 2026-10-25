@@ -98,7 +98,7 @@ git push
 
 ## Не коммитим
 
-Веса, программы TPU, `.env`, `.venv/`, `node_modules/`, `frontend/dist/`, снимки событий, видео больше 95 МБ. Полный список приведён в `.gitignore` из `STRUCTURE.md`. Если файл попал в коммит, его нужно убрать до PR:
+Веса `.pt`, программы TPU, другие `.onnx`, `.env`, `.venv/`, `node_modules/`, базу и снимки событий, видео больше 95 МБ. Исключения для CPU-демо: модели `ml/weights/yolov8n-pose.onnx` и `ml/weights/yolov8n.onnx` и сборка `frontend/dist/` хранятся в git намеренно; `dist` пересобирается и коммитится вместе с изменениями `frontend/src/`. Полный список приведён в `.gitignore` из `STRUCTURE.md`. Если файл попал в коммит, его нужно убрать до PR:
 
 ```bash
 git rm --cached <файл>
